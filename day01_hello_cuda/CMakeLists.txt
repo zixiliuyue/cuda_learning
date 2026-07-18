@@ -31,10 +31,24 @@ include_directories(${COMMON_INCLUDE})
 # ============================================================
 # 设置 CUDA 架构（支持 Maxwell 到 Blackwell）
 # ============================================================
-if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "12.0")
-    set(CMAKE_CUDA_ARCHITECTURES 50 52 61 70 75 80 86 89 90 100 120)
+# ============================================================
+# CUDA 架构选择（版本感知，确保跨 CUDA 版本都能编译）
+#   - CUDA 13+：移除了 sm_50~sm_70，仅支持 sm_75 及以上（含 Blackwell sm_120）
+#   - CUDA 12.x：支持 sm_50 到 sm_90
+#   - 更早版本：使用传统架构列表
+# ============================================================
+if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "13.0")
+    set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90 100 120)
+elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "12.0")
+    set(CMAKE_CUDA_ARCHITECTURES 50 61 70 75 80 86 89 90)
 else()
-    set(CMAKE_CUDA_ARCHITECTURES 50 52 61 70 75 80 86)
+    set(CMAKE_CUDA_ARCHITECTURES 50 52 61 70 75)
+endif()
+
+# Windows/MSVC：源码为 UTF-8（含中文注释），用 /utf-8 消除 C4819 代码页警告
+if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/utf-8>)
+    add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8>)
 endif()
 
 # ============================================================

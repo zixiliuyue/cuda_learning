@@ -1,0 +1,51 @@
+// Package repository 定义领域实体的持久化接口（仓储模式）。
+//
+// 通过接口隔离业务逻辑与具体存储实现，使业务代码不直接依赖 MongoDB。
+// 平台同时提供内存实现（用于单元测试）与 MongoDB 实现（用于生产）。
+package repository
+
+import (
+	"context"
+
+	"qingtian/internal/domain"
+)
+
+// UserRepository 定义用户持久化能力。
+type UserRepository interface {
+	// Create 创建用户。用户名冲突时应返回 CodeConflict 业务错误。
+	Create(ctx context.Context, u *domain.User) error
+	// GetByID 按 ID 查询用户，不存在时返回 CodeNotFound。
+	GetByID(ctx context.Context, id string) (*domain.User, error)
+	// GetByUsername 按用户名查询用户，不存在时返回 CodeNotFound。
+	GetByUsername(ctx context.Context, username string) (*domain.User, error)
+	// List 返回全部用户。
+	List(ctx context.Context) ([]*domain.User, error)
+}
+
+// NodeRepository 定义节点持久化能力。
+type NodeRepository interface {
+	// Upsert 创建或更新节点（按 ID）。节点重复注册时覆盖旧记录。
+	Upsert(ctx context.Context, n *domain.Node) error
+	// GetByID 按 ID 查询节点，不存在时返回 CodeNotFound。
+	GetByID(ctx context.Context, id string) (*domain.Node, error)
+	// List 返回全部节点。
+	List(ctx context.Context) ([]*domain.Node, error)
+	// UpdateStatus 更新节点在线状态。
+	UpdateStatus(ctx context.Context, id string, status domain.NodeStatus) error
+	// UpdateHeartbeat 更新节点心跳时间与实时 GPU 信息。
+	UpdateHeartbeat(ctx context.Context, id string, gpus []domain.GPU) error
+}
+
+// TaskRepository 定义任务持久化能力。
+type TaskRepository interface {
+	// Create 创建任务。
+	Create(ctx context.Context, t *domain.Task) error
+	// GetByID 按 ID 查询任务，不存在时返回 CodeNotFound。
+	GetByID(ctx context.Context, id string) (*domain.Task, error)
+	// Update 全量更新任务。
+	Update(ctx context.Context, t *domain.Task) error
+	// List 按可选状态过滤返回任务列表；status 为空表示不过滤。
+	List(ctx context.Context, status domain.TaskStatus) ([]*domain.Task, error)
+	// ListByOwner 返回指定用户的任务列表。
+	ListByOwner(ctx context.Context, owner string) ([]*domain.Task, error)
+}

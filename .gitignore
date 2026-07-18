@@ -1,0 +1,45 @@
+# === CUDA 30天学习项目 .gitignore ===
+
+# 编译产物
+build/
+cmake-build-*/
+*.exe
+*.out
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.pdb
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# IDE
+.vs/
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# 临时文件
+_tmp/
+*.tmp
+*.log

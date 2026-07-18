@@ -1,6 +1,6 @@
-/******************************************************************************
+﻿/******************************************************************************
  * @file    main.cu
- * @brief   Day 6: 共享内存优化 — Tiled Matrix Multiplication
+ * @brief   Day 6: 共享内存优化 - Tiled Matrix Multiplication
  * @details 本程序实现矩阵乘法 C = A x B，对比三种实现：
  *          1. CPU 参考实现（三重循环）
  *          2. GPU 朴素实现（每个线程计算一个元素，重复读取全局内存）
@@ -61,7 +61,7 @@
  * @param  d_a  输入矩阵 A（M x K）
  * @param  d_b  输入矩阵 B（K x N）
  * @param  d_c  输出矩阵 C（M x N）
- * @param  width  矩阵维度（假设三方阵）
+ * @param  width  矩阵维度（假设为方阵，即 M = N = K = width）
  * @return void
  *
  * @details 每个线程计算输出矩阵 C 的一个元素。
@@ -183,7 +183,12 @@ __global__ void matmul_tiled_kernel(const float* d_a, const float* d_b, float* d
         // 这是 Tiling 算法的关键步骤！
         // 如果没有同步，某些线程可能还在读取共享内存时，
         // 其他线程已经开始覆盖共享内存中的数据
-        __syncthreads();
+        // 注意：__syncthreads() 是 Block 级同步，不是 Grid 级！
+    // 常见陷阱：
+    // 1. 只用在 if 分支里会导致线程死锁——所有线程必须到达同一个 __syncthreads()
+    // 2. 不能用于同步不同 Block 的线程
+    // 3. 在共享内存读写之间必须成对出现
+    __syncthreads();
 
         // 使用共享内存中的数据计算部分积
         // 每个线程计算 TILE_WIDTH 个元素的乘积和
@@ -233,7 +238,7 @@ int main(void)
 {
     printf("\n");
     printf("=============================================================\n");
-    printf("     Day 6: 共享内存优化 — Tiled Matrix Multiplication        \n");
+    printf("     Day 6: 共享内存优化 - Tiled Matrix Multiplication        \n");
     printf("=============================================================\n\n");
 
     print_device_info();
@@ -291,7 +296,7 @@ int main(void)
     gpu_timer_start(&timer_cpu);
     matmul_cpu(h_a, h_b, h_c_ref, MATRIX_SIZE);
     gpu_timer_stop(&timer_cpu);
-    gpu_timer_print(&timer_cpu, "CPU 矩阵乘法");
+    gpu_timer_print(&timer_cpu, "CPU 矩阵乘法 ");
 
     /* --------------------------------------------------------
      *  GPU 朴素实现
@@ -303,7 +308,7 @@ int main(void)
     matmul_naive_kernel<<<grid_dim, block_dim>>>(d_a, d_b, d_c, MATRIX_SIZE);
     gpu_timer_stop(&timer_naive);
     CHECK_KERNEL_ERROR();
-    gpu_timer_print(&timer_naive, "GPU 朴素实现");
+    gpu_timer_print(&timer_naive, "GPU 朴素实现 ");
 
     CUDA_SAFE_CALL(cudaMemcpy(h_c_naive, d_c, bytes, cudaMemcpyDeviceToHost));
     int correct_naive = compare_float_arrays(h_c_naive, h_c_ref, num_elements, TOLERANCE);
@@ -318,7 +323,7 @@ int main(void)
     matmul_tiled_kernel<<<grid_dim, block_dim>>>(d_a, d_b, d_c, MATRIX_SIZE);
     gpu_timer_stop(&timer_tiled);
     CHECK_KERNEL_ERROR();
-    gpu_timer_print(&timer_tiled, "GPU Tiled 实现");
+    gpu_timer_print(&timer_tiled, "GPU Tiled 实现 ");
 
     CUDA_SAFE_CALL(cudaMemcpy(h_c_tiled, d_c, bytes, cudaMemcpyDeviceToHost));
     int correct_tiled = compare_float_arrays(h_c_tiled, h_c_ref, num_elements, TOLERANCE);
@@ -339,8 +344,8 @@ int main(void)
     printf("  GPU 朴素实现    : %.2f ms (加速比: %.1fx)\n", naive_ms, cpu_ms / naive_ms);
     printf("  GPU Tiled 实现  : %.2f ms (加速比: %.1fx)\n", tiled_ms, cpu_ms / tiled_ms);
     printf("  Tiled vs 朴素   : %.2fx 更快\n", naive_ms / tiled_ms);
-    printf("  朴素结果验证    : %s\n", correct_naive ? "通过" : "失败");
-    printf("  Tiled 结果验证  : %s\n", correct_tiled ? "通过" : "失败");
+    printf("  朴素结果验证    : %s\n", correct_naive ? "通过 " : "失败 ");
+    printf("  Tiled 结果验证  : %s\n", correct_tiled ? "通过 " : "失败 ");
     printf("=============================================================\n");
 
     printf("\n");

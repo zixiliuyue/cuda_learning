@@ -38,11 +38,16 @@ if(CMAKE_CUDA_COMPILER)
     set(CMAKE_CUDA_SEPARABLE_COMPILATION ON)
 
     # 根据 CUDA 版本设置 architectures
-    # 这里支持从 Maxwell (5.0) 到 Blackwell (12.0) 的架构
-    # RTX 5060 Ti 属于 Blackwell 架构，Compute Capability 12.x
-    if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "12.0")
-        set(CMAKE_CUDA_ARCHITECTURES 50 52 61 70 75 80 86 89 90 100 120)
-        message(STATUS "[CUDA 30天] 目标 GPU 架构: Maxwell 到 Blackwell (包括 RTX 5060 Ti)")
+    #   - CUDA 13+：移除 sm_50~sm_70，仅 sm_75 及以上（含 Blackwell sm_120）
+    #   - CUDA 12.x：支持 sm_50 到 sm_90
+    #   - CUDA 11.x：Maxwell 到 Ampere
+    # RTX 5060 Ti 属于 Blackwell 架构，Compute Capability 12.x (sm_120)
+    if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "13.0")
+        set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90 100 120)
+        message(STATUS "[CUDA 30天] CUDA 13+ 目标架构: Turing 到 Blackwell (含 RTX 5060 Ti sm_120)")
+    elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "12.0")
+        set(CMAKE_CUDA_ARCHITECTURES 50 61 70 75 80 86 89 90)
+        message(STATUS "[CUDA 30天] CUDA 12.x 目标架构: Maxwell 到 Hopper")
     elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "11.0")
         set(CMAKE_CUDA_ARCHITECTURES 50 52 61 70 75 80 86)
     else()
@@ -51,11 +56,11 @@ if(CMAKE_CUDA_COMPILER)
 
     # Windows 平台额外配置
     if(WIN32)
-        # 避免 Windows 下 MSVC 与 nvcc 的警告冲突
-        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=/W3")
+        # /utf-8：源码含中文注释，消除 MSVC C4819 代码页警告
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=/utf-8")
     else()
         # Linux/macOS 下的优化和警告选项
-        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 -Wall")
+        set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3")
     endif()
 
     set(CUDA_AVAILABLE TRUE)

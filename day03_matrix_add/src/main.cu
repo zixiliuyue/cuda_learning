@@ -1,15 +1,15 @@
-/******************************************************************************
+﻿/******************************************************************************
  * @file    main.cu
- * @brief   Day 3: 矩阵加法 — 理解 CUDA 内存模型与数据传输
+ * @brief   Day 3: 矩阵加法 - 理解 CUDA 内存模型与数据传输
  * @details 本程序实现两个二维矩阵的逐元素相加: C[row][col] = A[row][col] + B[row][col]
  *
  *          核心学习目标：
- *          1. 二维线程组织的实际应用 — 每个线程处理矩阵的一个元素
+ *          1. 二维线程组织的实际应用 - 每个线程处理矩阵的一个元素
  * *          2. 二维索引的正确计算:
  *             row = blockIdx.y * blockDim.y + threadIdx.y
  *             col = blockIdx.x * blockDim.x + threadIdx.x
  *          3. 行优先（Row-Major）内存布局的理解
- *          4. 主机↔设备内存传输的完整流程
+ *          4. 主机<->设备内存传输的完整流程
  *          5. 统一内存（Unified Memory / cudaMallocManaged）的初步使用
  *          6. 二维数据的边界检查
  *
@@ -104,7 +104,7 @@ __global__ void matrix_add_kernel(const float* d_a, const float* d_b, float* d_c
  * @param  height  矩阵行数
  * @return void
  *
- * @details 使用 cudaMallocManaged 分配的内存称为"统一内存"（Unified Memory）。
+ * @details 使用 cudaMallocManaged 分配的内存称为 "统一内存 "（Unified Memory）。
  *          统一内存的优势：
  *          1. 不需要显式调用 cudaMemcpy 进行数据传输
  *          2. 系统自动在 CPU 和 GPU 之间迁移数据页
@@ -185,7 +185,7 @@ int main(void)
 {
     printf("\n");
     printf("=============================================================\n");
-    printf("     Day 3: 矩阵加法 — CUDA 内存模型与数据传输                \n");
+    printf("     Day 3: 矩阵加法 - CUDA 内存模型与数据传输                \n");
     printf("=============================================================\n\n");
 
     print_device_info();
@@ -242,7 +242,7 @@ int main(void)
     CUDA_SAFE_CALL(cudaMemcpy(d_a, h_a, bytes, cudaMemcpyHostToDevice));
     CUDA_SAFE_CALL(cudaMemcpy(d_b, h_b, bytes, cudaMemcpyHostToDevice));
     gpu_timer_stop(&timer_h2d);
-    gpu_timer_print(&timer_h2d, "H2D 数据传输");
+    gpu_timer_print(&timer_h2d, "H2D 数据传输 ");
 
     // 配置二维 Grid 和 Block
     // dim3(x, y) 创建二维维度，z 默认为 1
@@ -278,7 +278,7 @@ int main(void)
     gpu_timer_start(&timer_d2h);
     CUDA_SAFE_CALL(cudaMemcpy(h_c, d_c, bytes, cudaMemcpyDeviceToHost));
     gpu_timer_stop(&timer_d2h);
-    gpu_timer_print(&timer_d2h, "D2H 数据传输");
+    gpu_timer_print(&timer_d2h, "D2H 数据传输 ");
 
     // CPU 验证
     printf("\n[主机] CPU 参考计算 ...\n");
@@ -287,7 +287,7 @@ int main(void)
     gpu_timer_start(&timer_cpu);
     matrix_add_cpu(h_a, h_b, h_c_ref, MATRIX_COLS, MATRIX_ROWS);
     gpu_timer_stop(&timer_cpu);
-    gpu_timer_print(&timer_cpu, "CPU 矩阵加法");
+    gpu_timer_print(&timer_cpu, "CPU 矩阵加法 ");
 
     // 验证结果
     printf("\n[主机] 验证 GPU 结果 ...\n");
@@ -307,7 +307,7 @@ int main(void)
     printf("     第二部分：统一内存（cudaMallocManaged）                  \n");
     printf("=============================================================\n\n");
 
-    // 使用统一内存分配 — 不需要显式 cudaMemcpy！
+    // 使用统一内存分配 - 不需要显式 cudaMemcpy！
     printf("[主机] 分配统一内存 (cudaMallocManaged) ...\n");
     float *u_a, *u_b, *u_c;
     CUDA_SAFE_CALL(cudaMallocManaged((void**)&u_a, bytes));
@@ -319,7 +319,7 @@ int main(void)
     init_random_float(u_a, num_elements, -1.0f, 1.0f);
     init_random_float(u_b, num_elements, -1.0f, 1.0f);
 
-    // 启动 Kernel — 不需要显式数据传输！
+    // 启动 Kernel - 不需要显式数据传输！
     printf("[主机] 启动 Kernel（无需显式数据传输）...\n");
     GpuTimer timer_unified;
     gpu_timer_init(&timer_unified);
@@ -335,9 +335,9 @@ int main(void)
     // 在读取统一内存前需要同步，否则可能读到旧数据
     CUDA_SAFE_CALL(cudaDeviceSynchronize());
 
-    gpu_timer_print(&timer_unified, "Kernel + 自动数据迁移");
+    gpu_timer_print(&timer_unified, "Kernel + 自动数据迁移 ");
 
-    // 直接在 CPU 上读取结果 — 系统会自动将数据页迁移回 CPU
+    // 直接在 CPU 上读取结果 - 系统会自动将数据页迁移回 CPU
     printf("\n[主机] 统一内存结果（直接在 CPU 上访问）:\n");
     print_matrix_preview(u_c, MATRIX_COLS, MATRIX_ROWS, "[主机] 统一内存结果 C", 4);
 
@@ -364,8 +364,8 @@ int main(void)
     printf("  显式内存 D2H 传输   : %.4f ms\n", gpu_timer_get_elapsed_ms(&timer_d2h));
     printf("  统一内存 Kernel+迁移: %.4f ms\n", gpu_timer_get_elapsed_ms(&timer_unified));
     printf("  CPU 计算时间        : %.4f ms\n", gpu_timer_get_elapsed_ms(&timer_cpu));
-    printf("  显式内存结果验证    : %s\n", is_correct ? "通过" : "失败");
-    printf("  统一内存结果验证    : %s\n", is_unified_correct ? "通过" : "失败");
+    printf("  显式内存结果验证    : %s\n", is_correct ? "通过 " : "失败 ");
+    printf("  统一内存结果验证    : %s\n", is_unified_correct ? "通过 " : "失败 ");
     printf("=============================================================\n");
 
     /* --------------------------------------------------------

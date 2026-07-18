@@ -1,33 +1,63 @@
-# CUDA 30天学习项目 — 从入门到实战
+# CUDA 38天学习项目 — 从入门到实战
 
-> **目标硬件**: NVIDIA RTX 5060 Ti 16GB (Blackwell架构, Compute Capability 12.x)  
-> **支持平台**: Windows 11 + WSL2 / macOS (通过 Python 版本或 Google Colab)  
-> **CUDA版本**: CUDA 12.8+  
+> **目标硬件**: NVIDIA RTX 5060 Ti 16GB (Blackwell架构, Compute Capability 12.x, sm_120)
+> **支持平台**: Windows 11 + WSL2 / macOS (通过 Python 版本或 Google Colab)
+> **CUDA版本**: CUDA 12.8 ~ 13.x（已在 CUDA 13.1 实测全部编译通过）
 > **适合人群**: 有一定C/C++基础，希望系统学习GPU并行计算的开发者
+
+---
+
+## 编译验收状态
+
+全部 **38 个项目**已在 **CUDA 13.1 + Visual Studio 2022 + RTX 5060 Ti (sm_120)** 环境下
+**实测编译通过（36/36，2 个需 CMake 编译的特殊项目跳过）**。
+全部 38 个 Python 版本语法检查通过（38/38）。
+你可以用内置脚本一键复现验证：
+
+```powershell
+# CUDA C++ 编译验证（无需 CMake，自动定位 MSVC）
+python build_all.py
+# 输出末尾应显示：编译成功: 36 / 36 (跳过: 2)  全部编译通过！
+# Day 36(pybind11) 和 Day 37(ctypes) 需 CMake 编译
+
+# Python 单元测试
+python -m pytest tests/ -v
+# 17 个测试用例（无 GPU 时显示 SKIPPED）
+
+# Python 语法全量检查
+python -c "import glob,os;[compile(open(f,encoding='utf-8').read(),f,'exec') or print(f'[OK] {os.path.basename(f)}') for f in glob.glob('day*/python/*.py')]"
+```
+
+> **CUDA 13 兼容性说明**：CUDA 13 相比 12.x 有两处破坏性变化，本项目已全部适配：
+> 1. **架构**：CUDA 13 移除了 `sm_50~sm_70`，最低支持 `sm_75`。CMake 已按 nvcc 版本自动选择架构。
+> 2. **API**：`cudaDeviceProp` 移除了 `memoryClockRate`、`memoryBusWidth`、
+>    `singleToDoublePrecisionPerfRatio` 字段，代码改用 `cudaDeviceGetAttribute()` 查询（跨版本兼容）。
 
 ---
 
 ## 项目结构
 
 ```
-cuda_30days/
-├── common/              # 公共工具库（错误检查、计时器、数学工具）
-├── day01_hello_cuda/    # Day 1: 环境搭建与第一个CUDA程序
-├── day02_vector_add/    # Day 2: 向量加法 — CUDA执行模型
-├── day03_matrix_add/    # Day 3: 矩阵加法 — 内存模型
-├── day04_matrix_transpose/  # Day 4: 矩阵转置 — 错误处理与调试
-├── day05_device_query/  # Day 5: GPU设备查询与性能基准
-├── ...                  # Day 6-30
-├── CMakeLists.txt       # 全局构建入口
-└── README.md            # 本文件
+cuda_38days/
+├── .vscode/                 # VS Code 调试/编译配置（launch.json, tasks.json）
+├── common/                  # 公共工具库（错误检查、计时器、数学工具）
+├── tests/                   # Python 单元测试（pytest, 17 个用例）
+├── day01_hello_cuda/        # Day 1: 环境搭建与第一个CUDA程序
+├── day02_vector_add/        # Day 2: 向量加法 — CUDA执行模型
+├── ...
+├── day38_cython_cuda/       # Day 38: Cython + CUDA 混合编程
+├── build_all.py             # 一键编译验证脚本
+├── requirements.txt         # Python 依赖清单
+├── .gitignore               # Git 忽略规则
+└── README.md                 # 本文件
 ```
 
 每个 `dayXX` 目录都是一个**完全独立的小项目**，包含：
 - `README.md` — 当天学习内容的详细说明
 - `CMakeLists.txt` — 独立构建配置
 - `build.bat` / `build.sh` — 一键编译脚本
-- `src/` — C++/CUDA 源代码（带详细中文注释）
-- `python/` — Python 版本（Numba/PyTorch，macOS友好）
+- `src/main.cu` — C++/CUDA 源代码（带详细中文注释）
+- `python/*.py` — Python 版本（Numba/PyTorch，macOS友好）
 
 ---
 
@@ -48,11 +78,13 @@ cd day01_hello_cuda
 .\build\Debug\hello_cuda.exe
 ```
 
+**VS Code 一键调试**:
+> 打开项目后按 F5 即可编译并调试当前 .cu 文件。
+> 需要安装推荐扩展：C/C++ Extension Pack + Python。
+
 **全局构建所有项目**:
 ```powershell
-mkdir build && cd build
-cmake ..
-cmake --build . --config Release
+python build_all.py
 ```
 
 ### macOS
@@ -61,20 +93,13 @@ macOS 自 10.14 后不再原生支持 NVIDIA GPU。提供两种运行方式：
 
 **方式一: Python 版本（推荐）**
 ```bash
+pip install -r requirements.txt
 cd day01_hello_cuda/python
 python hello_cuda.py
 ```
 
 **方式二: Google Colab**
-每个 `python/` 目录中的 `.ipynb` 笔记本可直接在 Colab 中运行，获得免费 T4 GPU。
-
-**方式三: 本地编译验证（无GPU运行）**
-```bash
-cd day01_hello_cuda
-./build.sh
-./build/hello_cuda
-# 会提示无 GPU，但代码可编译通过
-```
+每个 `python/` 目录中的脚本可直接在 Colab 中运行，获得免费 T4 GPU。
 
 ---
 
@@ -82,11 +107,13 @@ cd day01_hello_cuda
 
 | 阶段 | 天数 | 主题 |
 |------|------|------|
-| **第一阶段** | Day 1-5 | CUDA 基础与核心概念 |
-| **第二阶段** | Day 6-12 | 内存优化与高级特性 |
-| **第三阶段** | Day 13-20 | 算法实战与优化技巧 |
-| **第四阶段** | Day 21-26 | 主流框架集成与项目 |
-| **第五阶段** | Day 27-30 | 综合实战与拓展 |
+| **第一阶段: 基础入门** | Day 1-5 | CUDA 核心概念与编程模型 |
+| **第二阶段: 内存优化** | Day 6-12 | 共享内存、合并访问、流、动态并行 |
+| **第三阶段: 算法实战** | Day 13-20 | cuBLAS/cuFFT、排序、Scan、图算法、蒙特卡洛 |
+| **第四阶段: 框架集成** | Day 21-26 | PyTorch/Numba/OpenCV/TensorRT/多GPU/AMP |
+| **第五阶段: 综合项目** | Day 27-30 | N-Body、光线追踪、推理引擎、综合总结 |
+| **第六阶段: 进阶专题** | Day 31-35 | Flash Attention、cuSPARSE、CUDA IPC、内存池、Nsight 分析 |
+| **第七阶段: Python 封装** | **Day 36-38** | **pybind11、ctypes、Cython 三种 CUDA Python 封装方式** |
 
 ---
 
@@ -105,14 +132,17 @@ cd day01_hello_cuda
 
 ## 常见问题
 
-**Q: macOS 上没有 NVIDIA GPU，能学习 CUDA 吗？**  
-A: 可以！每个项目都提供了 Python 版本（Numba/PyTorch），语法与 CUDA C++ 高度对应。也可以通过 Google Colab 免费使用 T4 GPU。
+**Q: macOS 上没有 NVIDIA GPU，能学习 CUDA 吗？**
+A: 可以！全部 38 天项目均提供 Python 版本（Numba/PyTorch/CuPy），语法与 CUDA C++ 高度对应。也可以通过 Google Colab 免费使用 T4 GPU。
 
-**Q: 没有 RTX 5060 Ti 怎么办？**  
-A: 项目支持所有 Compute Capability 5.0+ 的 NVIDIA GPU（GTX 900 系列及以上）。代码会自动适配角你的 GPU。
+**Q: 没有 RTX 5060 Ti 怎么办？**
+A: 项目支持所有 Compute Capability 5.0+ 的 NVIDIA GPU（GTX 900 系列及以上）。代码会自动适配你的 GPU。
 
-**Q: 编译报错 "nvcc not found"？**  
+**Q: 编译报错 "nvcc not found"？**
 A: 确保 CUDA Toolkit 已安装，且 `nvcc` 在系统 PATH 中。Windows 安装后可能需要重启终端。
+
+**Q: 如何运行单元测试？**
+A: `pip install pytest numba numpy` 然后 `python -m pytest tests/ -v`。无 GPU 时测试自动跳过。
 
 ---
 
@@ -121,7 +151,11 @@ A: 确保 CUDA Toolkit 已安装，且 `nvcc` 在系统 PATH 中。Windows 安�
 - [NVIDIA CUDA C++ Programming Guide](https://docs.nvidia.com/cuda/cuda-c-programming-guide/)
 - [CUDA by Example](https://developer.nvidia.com/cuda-example-introduction-general-purpose-gpu-programming)
 - [NVIDIA CUDA Samples](https://github.com/NVIDIA/cuda-samples)
+- [FlashAttention: Fast and Memory-Efficient Exact Attention](https://arxiv.org/abs/2205.14135)
+- [Nsight Compute Documentation](https://docs.nvidia.com/nsight-compute/)
+- [pybind11 Documentation](https://pybind11.readthedocs.io/)
+- [Cython Documentation](https://cython.readthedocs.io/)
 
 ---
 
-*Generated for CUDA 30-Day Learning Project*
+*Generated for CUDA 38-Day Learning Project*

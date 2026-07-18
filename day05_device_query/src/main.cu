@@ -1,4 +1,4 @@
-/******************************************************************************
+﻿/******************************************************************************
  * @file    main.cu
  * @brief   Day 5: GPU 设备查询与性能基准
  * @details 本程序全面查询 CUDA 设备的硬件特性，并运行微基准测试。
@@ -54,7 +54,7 @@ void print_device_details(const cudaDeviceProp& prop, int device_id)
     printf("  总显存                : %.2f GB\n",
            prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0));
     printf("  显存类型              : %s\n",
-           prop.integrated ? "集成显卡（共享系统内存）" : "独立显卡（专用显存）");
+           prop.integrated ? "集成显卡（共享系统内存） " : "独立显卡（专用显存） ");
 
     /* ---------------- 计算能力 ---------------- */
     printf("\n【计算资源】\n");
@@ -66,9 +66,13 @@ void print_device_details(const cudaDeviceProp& prop, int device_id)
     else if (prop.major == 5) cores_per_sm = 128;  // Maxwell
     else if (prop.major == 6) cores_per_sm = 64;   // Pascal (GP100: 64)
     else if (prop.major == 7) cores_per_sm = 64;   // Turing/Volta
-    else if (prop.major == 8) cores_per_sm = 128;  // Ampere
-    else if (prop.major == 9) cores_per_sm = 128;  // Ada Lovelace
-    else if (prop.major >= 10) cores_per_sm = 128; // Blackwell+
+    else if (prop.major == 8)
+    {
+        if (prop.minor >= 9) cores_per_sm = 128;   // Ada Lovelace (CC 8.9, e.g. RTX 40 系列)
+        else cores_per_sm = 128;                    // Ampere (CC 8.0/8.6, e.g. RTX 30 系列)
+    }
+    else if (prop.major == 9) cores_per_sm = 128;  // Hopper (CC 9.0, e.g. H100 数据中心 GPU)
+    else if (prop.major >= 10) cores_per_sm = 128; // Blackwell+ (CC 10.0~12.x, e.g. RTX 50 系列)
     else cores_per_sm = 128;
 
     printf("  每个 SM 的 CUDA 核心  : ~%d\n", cores_per_sm);
@@ -84,12 +88,22 @@ void print_device_details(const cudaDeviceProp& prop, int device_id)
     printf("  寄存器 / Block        : %d\n", prop.regsPerBlock);
     printf("  寄存器 / SM           : %d\n", prop.regsPerMultiprocessor);
     printf("  L2 缓存大小           : %zu KB\n", prop.l2CacheSize / 1024);
-    printf("  显存总线宽度          : %d bits\n", prop.memoryBusWidth);
-    printf("  显存时钟频率          : %.0f MHz\n", prop.memoryClockRate / 1000.0f);
 
-    // 计算理论显存带宽
-    double bandwidth_gbps = 2.0 * prop.memoryClockRate * 1000.0 *
-                            (prop.memoryBusWidth / 8.0) / 1e9;
+    /*
+     * 【CUDA 13 兼容性】显存频率与位宽字段已从 cudaDeviceProp 移除，
+     * 改用 cudaDeviceGetAttribute() 查询（CUDA 11/12/13 均兼容）。
+     */
+    int mem_clock_khz = 0;   // 显存时钟频率 (kHz)
+    int mem_bus_width = 0;   // 显存总线位宽 (bit)
+    cudaDeviceGetAttribute(&mem_clock_khz, cudaDevAttrMemoryClockRate, device_id);
+    cudaDeviceGetAttribute(&mem_bus_width, cudaDevAttrGlobalMemoryBusWidth, device_id);
+
+    printf("  显存总线宽度          : %d bits\n", mem_bus_width);
+    printf("  显存时钟频率          : %.0f MHz\n", mem_clock_khz / 1000.0f);
+
+    // 计算理论显存带宽 = 2(DDR) * 频率(Hz) * 位宽(Byte) / 1e9
+    double bandwidth_gbps = 2.0 * (double)mem_clock_khz * 1000.0 *
+                            (mem_bus_width / 8.0) / 1e9;
     printf("  理论显存带宽          : %.2f GB/s\n", bandwidth_gbps);
 
     /* ---------------- 维度限制 ---------------- */
@@ -101,11 +115,11 @@ void print_device_details(const cudaDeviceProp& prop, int device_id)
 
     /* ---------------- 特性支持 ---------------- */
     printf("\n【特性支持】\n");
-    printf("  统一内存              : %s\n", prop.managedMemory ? "支持" : "不支持");
-    printf("  并发内核执行          : %s\n", prop.concurrentKernels ? "支持" : "不支持");
+    printf("  统一内存              : %s\n", prop.managedMemory ? "支持 " : "不支持 ");
+    printf("  并发内核执行          : %s\n", prop.concurrentKernels ? "支持 " : "不支持 ");
     printf("  双精度浮点性能        : %s\n",
-           prop.singleToDoublePrecisionPerfRatio > 0 ? "支持" : "不支持");
-    printf("  ECC 内存纠错          : %s\n", prop.ECCEnabled ? "已启用" : "未启用");
+           (prop.major >= 1) ? "支持 " : "不支持 ");
+    printf("  ECC 内存纠错          : %s\n", prop.ECCEnabled ? "已启用 " : "未启用 ");
     printf("  PCIe 总线 ID          : %d:%d.%d\n", prop.pciDomainID, prop.pciBusID, prop.pciDeviceID);
 
     /* ---------------- Compute Capability 特性 ---------------- */
@@ -113,21 +127,21 @@ void print_device_details(const cudaDeviceProp& prop, int device_id)
 
     // 根据 CC 版本列出支持的关键特性
     printf("  - 动态并行 (Dynamic Parallelism)   : %s\n",
-           (prop.major >= 3) ? "支持" : "不支持");
+           (prop.major >= 3) ? "支持 " : "不支持 ");
     printf("  - 统一内存 (Unified Memory)        : %s\n",
-           (prop.major >= 3) ? "支持" : "不支持");
+           (prop.major >= 3) ? "支持 " : "不支持 ");
     printf("  - Warp Shuffle 指令                : %s\n",
-           (prop.major >= 3) ? "支持" : "不支持");
+           (prop.major >= 3) ? "支持 " : "不支持 ");
     printf("  - FP16 (半精度浮点)                : %s\n",
-           (prop.major >= 5) ? "支持" : "不支持");
+           (prop.major >= 5) ? "支持 " : "不支持 ");
     printf("  - Tensor Core (第一代)             : %s\n",
-           (prop.major >= 7) ? "支持" : "不支持");
+           (prop.major >= 7) ? "支持 " : "不支持 ");
     printf("  - 独立线程调度                     : %s\n",
-           (prop.major >= 7) ? "支持" : "不支持");
+           (prop.major >= 7) ? "支持 " : "不支持 ");
     printf("  - Tensor Core (第三代, Ampere)     : %s\n",
-           (prop.major >= 8) ? "支持" : "不支持");
+           (prop.major >= 8) ? "支持 " : "不支持 ");
     printf("  - FP8 / FP4 支持 (Blackwell)       : %s\n",
-           (prop.major >= 10) ? "支持" : "不支持");
+           (prop.major >= 10) ? "支持 " : "不支持 ");
 }
 
 /* ============================================================

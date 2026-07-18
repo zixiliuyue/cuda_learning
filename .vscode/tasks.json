@@ -1,0 +1,96 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "nvcc build current",
+            "type": "shell",
+            "command": "nvcc",
+            "args": [
+                "-arch=sm_120",
+                "-I", "${workspaceFolder}/common/include",
+                "-Xcompiler=/utf-8",
+                "${file}",
+                "-o", "${workspaceFolder}/_build/${fileBasenameNoExtension}.exe"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "env": {
+                    "PATH": "${env:PATH}"
+                }
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$nvcc"],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "detail": "用 nvcc 编译当前打开的 .cu 文件 (sm_120)"
+        },
+        {
+            "label": "nvcc build day01",
+            "type": "shell",
+            "command": "nvcc",
+            "args": [
+                "-arch=sm_120",
+                "-I", "${workspaceFolder}/common/include",
+                "-Xcompiler=/utf-8",
+                "${workspaceFolder}/day01_hello_cuda/src/main.cu",
+                "-o", "${workspaceFolder}/_build/day01.exe"
+            ],
+            "group": "build",
+            "problemMatcher": ["$nvcc"],
+            "detail": "编译 Day01"
+        },
+        {
+            "label": "nvcc build day05",
+            "type": "shell",
+            "command": "nvcc",
+            "args": [
+                "-arch=sm_120",
+                "-I", "${workspaceFolder}/common/include",
+                "-Xcompiler=/utf-8",
+                "${workspaceFolder}/day05_device_query/src/main.cu",
+                "-o", "${workspaceFolder}/_build/day05.exe"
+            ],
+            "group": "build",
+            "problemMatcher": ["$nvcc"],
+            "detail": "编译 Day05"
+        },
+        {
+            "label": "nvcc build all",
+            "type": "shell",
+            "command": "python",
+            "args": ["${workspaceFolder}/build_all.py"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "problemMatcher": [],
+            "detail": "编译全部 30 天项目"
+        },
+        {
+            "label": "运行单元测试",
+            "type": "shell",
+            "command": "python",
+            "args": ["-m", "pytest", "${workspaceFolder}/tests/", "-v"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "test",
+            "problemMatcher": [],
+            "detail": "运行全部 Python 单元测试"
+        },
+        {
+            "label": "创建 _build 目录",
+            "type": "shell",
+            "command": "if not exist \"${workspaceFolder}\\_build\" mkdir \"${workspaceFolder}\\_build\"",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "detail": "确保编译输出目录存在"
+        }
+    ]
+}

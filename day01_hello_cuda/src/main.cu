@@ -1,6 +1,6 @@
-/******************************************************************************
+﻿/******************************************************************************
  * @file    main.cu
- * @brief   Day 1: Hello CUDA — 我的第一个 GPU 程序
+ * @brief   Day 1: Hello CUDA - 我的第一个 GPU 程序
  * @details 这是 CUDA 30天学习项目的第一个程序，目标是理解：
  *          1. CUDA 程序的基本结构（主机代码 + 设备代码）
  *          2. Kernel 函数的语法 <<<grid, block>>>
@@ -57,7 +57,7 @@ __global__ void hello_cuda_kernel(void)
  * ============================================================ */
 
 /**
- * @brief  主函数 — 程序入口
+ * @brief  主函数 - 程序入口
  * @return int  程序退出码（0=成功）
  */
 int main(void)
@@ -67,7 +67,7 @@ int main(void)
      * -------------------------------------------------------- */
     printf("\n");
     printf("=============================================================\n");
-    printf("     Day 1: Hello CUDA — 我的第一个 GPU 程序                  \n");
+    printf("     Day 1: Hello CUDA - 我的第一个 GPU 程序                  \n");
     printf("=============================================================\n\n");
 
     // 使用 platform.h 中的宏打印当前平台信息
@@ -97,7 +97,7 @@ int main(void)
     printf("\n");
 
     // 创建 dim3 类型的维度变量
-    // dim3(x, y, z) — 这里 y 和 z 省略，默认为 1
+    // dim3(x, y, z) - 这里 y 和 z 省略，默认为 1
     dim3 grid_dim(num_blocks);          // Grid:  4 个 Block
     dim3 block_dim(threads_per_block);  // Block: 8 个 Thread
 
@@ -113,6 +113,9 @@ int main(void)
     // 这是必要的，因为 Kernel 启动是异步的：
     // CPU 发出启动命令后会立即继续执行后续代码，
     // 如果不调用 cudaDeviceSynchronize()，可能看不到 Kernel 的输出
+    // 注意：Kernel 启动是异步的！CPU 会立即返回，不会等待 GPU 完成。
+    // 如果需要等待 GPU 执行完毕（如正确性验证、计时），必须调用 cudaDeviceSynchronize()。
+    // 常见陷阱：忘记同步导致计时时间偏短，或数据还没就绪就被 CPU 读取。
     CUDA_SAFE_CALL(cudaDeviceSynchronize());
 
     printf("------------------------------------------------------------\n");

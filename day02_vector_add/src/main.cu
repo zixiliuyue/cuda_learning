@@ -1,12 +1,12 @@
-/******************************************************************************
+﻿/******************************************************************************
  * @file    main.cu
- * @brief   Day 2: 向量加法 — 理解 CUDA 执行模型与线程层次
+ * @brief   Day 2: 向量加法 - 理解 CUDA 执行模型与线程层次
  * @details 本程序实现两个向量的逐元素相加: C[i] = A[i] + B[i]
  *
  *          核心学习目标：
- *          1. 一维线程组织的实际应用 — 每个线程处理一个数组元素
+ *          1. 一维线程组织的实际应用 - 每个线程处理一个数组元素
  *          2. 全局线程 ID 的正确计算: tid = blockIdx.x * blockDim.x + threadIdx.x
- *          3. 边界检查 — 防止线程访问超出数组范围的内存
+ *          3. 边界检查 - 防止线程访问超出数组范围的内存
  *          4. GPU 结果与 CPU 结果对比验证
  *          5. 使用 CUDA_SAFE_CALL 宏进行错误检查
  *          6. 使用 GpuTimer 测量 Kernel 执行时间
@@ -129,7 +129,7 @@ int main(void)
      * -------------------------------------------------------- */
     printf("\n");
     printf("=============================================================\n");
-    printf("     Day 2: 向量加法 — CUDA 执行模型与线程层次                \n");
+    printf("     Day 2: 向量加法 - CUDA 执行模型与线程层次                \n");
     printf("=============================================================\n\n");
 
     print_device_info();
@@ -207,7 +207,7 @@ int main(void)
     CUDA_SAFE_CALL(cudaMemcpy(d_b, h_b, bytes, cudaMemcpyHostToDevice));
 
     gpu_timer_stop(&timer_h2d);
-    gpu_timer_print(&timer_h2d, "主机→设备数据传输");
+    gpu_timer_print(&timer_h2d, "主机->设备数据传输 ");
 
     /* --------------------------------------------------------
      *  第五步：启动 CUDA Kernel
@@ -255,7 +255,7 @@ int main(void)
     CUDA_SAFE_CALL(cudaMemcpy(h_c, d_c, bytes, cudaMemcpyDeviceToHost));
 
     gpu_timer_stop(&timer_d2h);
-    gpu_timer_print(&timer_d2h, "设备→主机数据传输");
+    gpu_timer_print(&timer_d2h, "设备->主机数据传输 ");
 
     /* --------------------------------------------------------
      *  第七步：验证 GPU 结果的正确性
@@ -271,7 +271,7 @@ int main(void)
     vector_add_cpu(h_a, h_b, h_c_ref, VECTOR_SIZE);
 
     gpu_timer_stop(&timer_cpu);
-    gpu_timer_print(&timer_cpu, "CPU 参考计算");
+    gpu_timer_print(&timer_cpu, "CPU 参考计算 ");
 
     // 对比 GPU 和 CPU 的结果
     printf("\n[主机] 验证 GPU 计算结果 ...\n");
@@ -305,7 +305,7 @@ int main(void)
     {
         printf("  GPU 加速比          : %.2f x\n", cpu_ms / kernel_ms);
     }
-    printf("  结果验证            : %s\n", is_correct ? "通过" : "失败");
+    printf("  结果验证            : %s\n", is_correct ? "通过 " : "失败 ");
     printf("=============================================================\n");
 
     /* --------------------------------------------------------

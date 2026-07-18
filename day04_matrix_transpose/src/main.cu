@@ -1,6 +1,6 @@
-/******************************************************************************
+﻿/******************************************************************************
  * @file    main.cu
- * @brief   Day 4: 矩阵转置 — 错误处理与调试基础
+ * @brief   Day 4: 矩阵转置 - 错误处理与调试基础
  * @details 本程序实现矩阵转置: out[col][row] = in[row][col]
  *
  *          核心学习目标：
@@ -143,7 +143,7 @@ int main(void)
 {
     printf("\n");
     printf("=============================================================\n");
-    printf("     Day 4: 矩阵转置 — 错误处理与调试基础                     \n");
+    printf("     Day 4: 矩阵转置 - 错误处理与调试基础                     \n");
     printf("=============================================================\n\n");
 
     print_device_info();
@@ -189,7 +189,7 @@ int main(void)
         }
     }
 
-    print_matrix_corner(h_in, MATRIX_COLS, MATRIX_ROWS, "[主机] 输入矩阵", 4);
+    print_matrix_corner(h_in, MATRIX_COLS, MATRIX_ROWS, "[主机] 输入矩阵 ", 4);
 
     /* --------------------------------------------------------
      *  第三步：分配设备内存（使用 CUDA_SAFE_CALL 宏）
@@ -218,7 +218,7 @@ int main(void)
     CUDA_SAFE_CALL(cudaMemcpy(d_in, h_in, bytes, cudaMemcpyHostToDevice));
 
     gpu_timer_stop(&timer_h2d);
-    gpu_timer_print(&timer_h2d, "H2D 数据传输");
+    gpu_timer_print(&timer_h2d, "H2D 数据传输 ");
 
     /* --------------------------------------------------------
      *  第五步：启动 Kernel（带调试版本）
@@ -262,7 +262,7 @@ int main(void)
     CUDA_SAFE_CALL(cudaMemcpy(h_out, d_out, bytes, cudaMemcpyDeviceToHost));
 
     gpu_timer_stop(&timer_d2h);
-    gpu_timer_print(&timer_d2h, "D2H 数据传输");
+    gpu_timer_print(&timer_d2h, "D2H 数据传输 ");
 
     /* --------------------------------------------------------
      *  第七步：验证结果
@@ -273,12 +273,12 @@ int main(void)
     gpu_timer_start(&timer_cpu);
     matrix_transpose_cpu(h_in, h_out_ref, MATRIX_COLS, MATRIX_ROWS);
     gpu_timer_stop(&timer_cpu);
-    gpu_timer_print(&timer_cpu, "CPU 转置");
+    gpu_timer_print(&timer_cpu, "CPU 转置 ");
 
     printf("\n[主机] 验证 GPU 结果 ...\n");
     int is_correct = compare_float_arrays(h_out, h_out_ref, num_elements, TOLERANCE);
 
-    print_matrix_corner(h_out, MATRIX_ROWS, MATRIX_COLS, "[主机] 转置结果", 4);
+    print_matrix_corner(h_out, MATRIX_ROWS, MATRIX_COLS, "[主机] 转置结果 ", 4);
 
     /* --------------------------------------------------------
      *  第八步：故意触发一个错误（教学演示）
@@ -330,7 +330,7 @@ int main(void)
     printf("  矩阵尺寸        : %d x %d\n", MATRIX_ROWS, MATRIX_COLS);
     printf("  GPU Kernel      : %.4f ms\n", gpu_timer_get_elapsed_ms(&timer_kernel));
     printf("  CPU 计算        : %.4f ms\n", gpu_timer_get_elapsed_ms(&timer_cpu));
-    printf("  结果验证        : %s\n", is_correct ? "通过" : "失败");
+    printf("  结果验证        : %s\n", is_correct ? "通过 " : "失败 ");
     printf("=============================================================\n");
 
     /* --------------------------------------------------------

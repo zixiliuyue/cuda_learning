@@ -1,4 +1,4 @@
-/******************************************************************************
+﻿/******************************************************************************
  * @file    cuda_utils.h
  * @brief   CUDA 错误检查与辅助工具宏
  * @details 提供统一的 CUDA API 错误检查封装，帮助初学者快速定位 GPU 程序中的错误。
@@ -156,7 +156,32 @@ static inline void print_device_info(void)
     printf("  共享内存/块    : %zu KB\n", prop.sharedMemPerBlock / 1024);
     printf("  寄存器/块      : %d\n", prop.regsPerBlock);
     printf("  Warp 大小      : %d\n", prop.warpSize);
-    printf("  显存带宽(理论): %.1f GB/s\n", 2.0 * prop.memoryClockRate * 1000.0 * prop.memoryBusWidth / 8.0 / 1e9);
+
+    /*
+     * 显存带宽的理论值 = 2 (DDR双倍速率) * 显存频率 * 总线位宽 / 8
+     *
+     * 【重要兼容性说明】
+     * 在 CUDA 12.x 及更早版本中，可以直接通过 prop.memoryClockRate 和
+     * prop.memoryBusWidth 获取显存频率和位宽。
+     * 但从 CUDA 13.0 起，这两个字段已从 cudaDeviceProp 结构体中【移除】。
+     * 官方推荐改用 cudaDeviceGetAttribute() 配合属性枚举来查询，
+     * 该 API 在 CUDA 11 / 12 / 13 上均可用，是跨版本最稳妥的写法。
+     */
+    int mem_clock_khz = 0;   // 显存时钟频率（单位：千赫兹 kHz）
+    int mem_bus_width = 0;   // 显存总线位宽（单位：比特 bit）
+    cudaDeviceGetAttribute(&mem_clock_khz, cudaDevAttrMemoryClockRate, current_device);
+    cudaDeviceGetAttribute(&mem_bus_width, cudaDevAttrGlobalMemoryBusWidth, current_device);
+
+    if (mem_clock_khz > 0 && mem_bus_width > 0)
+    {
+        // mem_clock_khz 单位为 kHz，乘以 1000 转换为 Hz
+        double bandwidth_gbps = 2.0 * (double)mem_clock_khz * 1000.0 * (mem_bus_width / 8.0) / 1e9;
+        printf("  显存带宽(理论): %.1f GB/s\n", bandwidth_gbps);
+    }
+    else
+    {
+        printf("  显存带宽(理论): 无法查询（驱动不支持该属性）\n");
+    }
     printf("=================================================================\n");
 }
 

@@ -1,0 +1,258 @@
+// 本文件实现 HTTP 处理器与路由注册。
+//
+// Server 聚合各 service 与令牌管理器，向外暴露 REST 风格的 API。
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"qingtian/internal/auth"
+	"qingtian/internal/domain"
+	"qingtian/internal/service"
+	"qingtian/pkg/apperr"
+	"qingtian/pkg/httpx"
+)
+
+// Server 是控制面 HTTP 服务，持有各业务服务依赖。
+type Server struct {
+	users  *service.UserService
+	nodes  *service.NodeService
+	tasks  *service.TaskService
+	tokens *auth.TokenManager
+}
+
+// NewServer 创建 HTTP 服务实例。
+func NewServer(
+	users *service.UserService,
+	nodes *service.NodeService,
+	tasks *service.TaskService,
+	tokens *auth.TokenManager,
+) *Server {
+	return &Server{users: users, nodes: nodes, tasks: tasks, tokens: tokens}
+}
+
+// Routes 构建并返回路由处理器。
+//
+// 参数：
+//   - authMW: 认证中间件，对需要登录的接口逐个包裹。
+//
+// 返回值：
+//   - http.Handler: 完整路由。
+//
+// 说明：
+//   - 采用 Go 1.22+ ServeMux 的"方法+路径"模式；对需要登录的接口用 authMW 单独包裹，
+//     避免嵌套 mux 带来的路由冲突。
+func (s *Server) Routes(authMW Middleware) http.Handler {
+	mux := http.NewServeMux()
+
+	// 健康检查（无需认证）。
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+
+	// 认证相关（无需登录）。
+	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
+	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
+
+	// 节点注册与心跳（供 Agent 调用，此处不强制用户 JWT，生产应改为 mTLS/Agent 令牌）。
+	mux.HandleFunc("POST /api/v1/nodes/register", s.handleNodeRegister)
+	mux.HandleFunc("POST /api/v1/nodes/{id}/heartbeat", s.handleNodeHeartbeat)
+
+	// authed 将普通处理函数包裹认证中间件后再注册。
+	authed := func(h http.HandlerFunc) http.Handler {
+		return authMW(h)
+	}
+	mux.Handle("GET /api/v1/nodes", authed(s.handleListNodes))
+	mux.Handle("GET /api/v1/tasks", authed(s.handleListTasks))
+	mux.Handle("POST /api/v1/tasks", authed(s.handleSubmitTask))
+	mux.Handle("GET /api/v1/tasks/{id}", authed(s.handleGetTask))
+	mux.Handle("POST /api/v1/tasks/{id}/cancel", authed(s.handleCancelTask))
+	mux.Handle("GET /api/v1/users", authed(s.handleListUsers))
+
+	return mux
+}
+
+// decodeJSON 解析请求体 JSON 到目标结构，失败返回业务错误。
+func decodeJSON(r *http.Request, dst interface{}) error {
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		return apperr.InvalidArgument("请求体 JSON 解析失败")
+	}
+	return nil
+}
+
+// requirePermission 校验当前用户是否具备指定权限。
+func requirePermission(r *http.Request, perm auth.Permission) error {
+	claims, ok := claimsFromContext(r.Context())
+	if !ok {
+		return apperr.Unauthorized("未认证")
+	}
+	if !auth.HasPermission(claims.Role, perm) {
+		return apperr.Forbidden("无权限执行该操作")
+	}
+	return nil
+}
+
+// handleRegister 处理用户注册。
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string      `json:"username"`
+		Password string      `json:"password"`
+		Role     domain.Role `json:"role"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if req.Role == "" {
+		req.Role = domain.RoleDeveloper // 默认注册为开发者
+	}
+	u, err := s.users.Register(r.Context(), req.Username, req.Password, req.Role)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, u)
+}
+
+// handleLogin 处理登录，返回 JWT 令牌与用户信息。
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	token, u, err := s.users.Login(r.Context(), req.Username, req.Password)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]interface{}{"token": token, "user": u})
+}
+
+// handleListUsers 返回用户列表（需 user:manage 权限）。
+func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermUserManage); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	users, err := s.users.List(r.Context())
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, users)
+}
+
+// handleNodeRegister 处理节点注册（Agent 调用）。
+func (s *Server) handleNodeRegister(w http.ResponseWriter, r *http.Request) {
+	var req service.RegisterRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	node, err := s.nodes.Register(r.Context(), req)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, node)
+}
+
+// handleNodeHeartbeat 处理节点心跳（Agent 调用）。
+func (s *Server) handleNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.PathValue("id")
+	var req struct {
+		GPUs []domain.GPU `json:"gpus"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if err := s.nodes.Heartbeat(r.Context(), nodeID, req.GPUs); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"result": "ok"})
+}
+
+// handleListNodes 返回节点列表（需 node:view 权限）。
+func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermNodeView); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	nodes, err := s.nodes.List(r.Context())
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, nodes)
+}
+
+// handleSubmitTask 处理任务提交（需 task:create 权限）。
+func (s *Server) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskCreate); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	claims, _ := claimsFromContext(r.Context())
+	var req service.SubmitRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	task, err := s.tasks.Submit(r.Context(), claims.UserID, req)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, task)
+}
+
+// handleListTasks 返回任务列表，支持 ?status= 过滤（需 task:view 权限）。
+func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskView); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	status := domain.TaskStatus(r.URL.Query().Get("status"))
+	tasks, err := s.tasks.List(r.Context(), status)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, tasks)
+}
+
+// handleGetTask 返回单个任务详情（需 task:view 权限）。
+func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskView); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	task, err := s.tasks.Get(r.Context(), id)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, task)
+}
+
+// handleCancelTask 取消任务（需 task:cancel 权限）。
+func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskCancel); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.tasks.Cancel(r.Context(), id); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"result": "canceled"})
+}

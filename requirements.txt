@@ -1,0 +1,18 @@
+# CUDA 30天学习项目 — Python 依赖
+# 安装: pip install -r requirements.txt
+
+# 核心依赖 (Day 1-22 Python 版本)
+numba>=0.59.0          # CUDA JIT 编译 (Numba CUDA)
+numpy>=1.24.0          # 数值计算
+
+# 深度学习框架 (Day 21-26)
+# torch>=2.2.0          # PyTorch (如需 GPU 版本请从官网安装对应 CUDA 版本)
+
+# 图像处理 (Day 15, 23)
+# opencv-python>=4.8.0  # OpenCV (含 CUDA 模块需单独编译)
+
+# 可视化 (可选)
+matplotlib>=3.7.0      # 图表绘制 (Day 5, 19, 27 等)
+
+# 测试框架
+pytest>=7.0.0          # 单元测试 (Day 测试目录)

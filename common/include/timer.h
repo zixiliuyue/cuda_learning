@@ -1,4 +1,4 @@
-/******************************************************************************
+﻿/******************************************************************************
  * @file    timer.h
  * @brief   CUDA GPU 事件计时器
  * @details 提供基于 CUDA Event 的高精度计时功能，用于测量 Kernel 执行时间
@@ -147,7 +147,7 @@ static inline double gpu_timer_get_elapsed_sec(GpuTimer* timer)
 /**
  * @brief  打印计时结果（带格式化输出）
  * @param  timer       指向 GpuTimer 结构体的指针
- * @param  operation   操作描述字符串（如 "Kernel 执行"、"内存传输"）
+ * @param  operation   操作描述字符串（如 "Kernel 执行 "、 "内存传输 "）
  * @return void
  *
  * @example
