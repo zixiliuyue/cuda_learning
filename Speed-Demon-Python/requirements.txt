@@ -1,0 +1,33 @@
+# Speed Demon Python 依赖包
+
+# 性能分析工具
+line_profiler==4.1.2
+memory_profiler==0.61.0
+py-spy==0.3.14
+
+# 内存分析工具
+objgraph==3.6.0
+pympler==1.0.1
+
+# 代码加速
+numba==0.58.1
+numpy==1.26.3
+cython==3.0.8
+
+# GPU 加速 (可选)
+cupy-cuda11x==13.0.0
+
+# 并发编程
+asyncio==3.4.3
+
+# 数据处理
+pandas==2.2.0
+
+# 可视化
+matplotlib==3.8.2
+
+# 测试
+pytest==7.4.4
+
+# 其他工具
+tqdm==4.66.1

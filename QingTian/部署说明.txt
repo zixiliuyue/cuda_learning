@@ -1,0 +1,41 @@
+
+QingTian 项目部署说明
+============================================================
+
+服务器信息:
+- 地址: 192.168.10.82
+- 用户: sen
+- 密码: 123
+- 部署目录: /opt/qingtian
+
+快速部署命令:
+============================================================
+
+# 1. 上传文件
+scp "C:\Users\sen\AppData\Local\Temp\tmpy4g42ep0\qingtian.tar.gz" sen@192.168.10.82:/opt/qingtian/
+
+# 2. SSH 登录
+ssh sen@192.168.10.82
+
+# 3. 解压并部署（在服务器上执行）
+cd /opt/qingtian
+mkdir -p /opt/qingtian
+tar -xzf qingtian.tar.gz
+
+# 4. 启动服务（需要 sudo）
+echo '123' | sudo -S docker compose up -d --build
+
+# 5. 检查服务状态
+echo '123' | sudo -S docker compose ps
+
+# 6. 查看日志
+echo '123' | sudo -S docker compose logs -f
+
+访问地址
+============================================================
+前端地址: http://192.168.10.82
+
+默认账号
+============================================================
+用户名: admin
+密码: admin123

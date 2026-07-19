@@ -1,0 +1,30 @@
+# Python 性能分析工具依赖
+# 安装命令: pip install -r requirements.txt
+
+# 1. py-spy - 采样性能分析器
+# 非侵入式，不需要修改代码
+# 可以生成火焰图
+py-spy>=0.3.14
+
+# 2. line_profiler - 逐行性能分析器
+# 使用 @profile 装饰器标记需要分析的函数
+# 运行: kernprof -l -v your_script.py
+line_profiler>=4.0.3
+
+# 3. pytest-benchmark - 基准测试框架
+# pytest 的插件，用于编写性能测试
+pytest>=7.0.0
+pytest-benchmark>=4.0.0
+
+# 4. snakeviz - cProfile 结果可视化
+# 将 cProfile 的 .prof 文件转换为交互式图表
+# 运行: snakeviz profile_results.prof
+snakeviz>=2.1.1
+
+# 5. 其他可选工具
+# memory-profiler - 内存分析 (如果需要内存分析)
+# memory-profiler>=0.60.0
+
+# 注意:
+# - cProfile 是 Python 标准库的一部分，不需要安装
+# - 建议在虚拟环境中安装这些工具

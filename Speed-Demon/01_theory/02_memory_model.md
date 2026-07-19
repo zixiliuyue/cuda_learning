@@ -1,373 +1,440 @@
-# Go 内存模型与逃逸分析
+# CUDA 内存模型 🧠
 
-## Go 内存分配器架构
+## 1. 内存类型详解 📋
 
-### TCMalloc 继承
+CUDA 提供多种内存类型，各有不同的特性、作用域和使用场景。
 
-Go 的内存分配器基于 Google TCMalloc（Thread-Caching Malloc），但做了专门优化以适应 Go 的并发模型。
+### 1.1 全局内存 (Global Memory) 🌍
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    应用程序                         │
-└───────────┬─────────────────────────────────────────┘
-            │
-            ▼
-┌─────────────────────────────────────────────────────┐
-│  MCache (per-P cache)                              │
-│  ├─ span class 0 (tiny objects < 16B)             │
-│  ├─ span class 1 (16-32B)                         │
-│  ├─ ...                                           │
-│  └─ span class 66 (> 32KB)                        │
-└───────────┬─────────────────────────────────────────┘
-            │ 从 MCache 获取失败时
-            ▼
-┌─────────────────────────────────────────────────────┐
-│  MCentral (per-size-class central cache)           │
-│  ┌─────────────┐    ┌─────────────┐                │
-│  │  empty list │    │  nonempty   │                │
-│  └─────────────┘    └─────────────┘                │
-└───────────┬─────────────────────────────────────────┘
-            │ 从 MCentral 获取失败时
-            ▼
-┌─────────────────────────────────────────────────────┐
-│  MHeap (global heap)                               │
-│  ┌─────────────────────────────────────────────┐   │
-│  │                  Arenas                     │   │
-│  │  (64-bit: 每个 64MB, 32-bit: 每个 4MB)     │   │
-│  └─────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
-```
+**位置**: GPU 板载显存 (DRAM)
 
-## 逃逸分析 (Escape Analysis)
+#### 特性
 
-### 什么是逃逸？
+| 属性 | 值 |
+|------|-----|
+| 容量 | GB 级 (4GB - 80GB+) |
+| 速度 | ~200-800 cycles |
+| 带宽 | ~1TB/s (A100) |
+| 作用域 | 所有线程 + Host |
+| 生命周期 | 应用程序级 |
+| 关键字 | `__global__` / `cudaMalloc()` |
 
-**逃逸** = 变量的生命周期超出了当前函数栈帧
+#### 分配方式
 
-**不逃逸** = 变量只在函数内使用，函数返回后不再引用
+```cpp
+// Host 端分配
+float* dev_ptr;
+cudaMalloc(&dev_ptr, size);          // 分配
+cudaMemcpy(dev_ptr, host_ptr, size, cudaMemcpyHostToDevice);  // 拷贝
+cudaFree(dev_ptr);                   // 释放
 
-### 为什么重要？
-
-| 分配位置 | 分配开销 | GC 压力 | 访问速度 |
-|---------|---------|--------|---------|
-| 栈 (Stack) | ~1ns | 无 | L1 Cache |
-| 堆 (Heap) | ~100ns | 有 | 可能较慢 |
-
-### 逃逸分析决策树
-
-```
-变量定义
-    │
-    ▼
-  是否被返回? ──是──→ 逃逸到堆
-    │否
-    ▼
-  是否被 goroutine 引用? ──是──→ 逃逸到堆
-    │否
-    ▼
-  是否被闭包捕获并在外部使用? ──是──→ 逃逸到堆
-    │否
-    ▼
-  是否通过 interface 调用方法? ──是──→ 可能逃逸
-    │否
-    ▼
-  大小是否超过栈限制? ──是──→ 逃逸到堆
-    │否
-    ▼
-  可以分配在栈上
-```
-
-### 经典逃逸场景
-
-#### 1. 返回指针
-
-```go
-// BAD: user 逃逸到堆
-func NewUser() *User {
-    return &User{}  // 逃逸
-}
-
-// GOOD: 使用值返回（如果合适）
-func NewUser() User {
-    return User{}  // 不逃逸
+// 内核中声明
+__global__ void kernel() {
+    // 动态全局内存 (需要编译时指定 -rdc=true)
+    __device__ float global_var;
 }
 ```
 
-#### 2. 发送到 channel
+---
 
-```go
-// BAD: 发送到 channel 的指针会逃逸
-func producer(ch chan<- *Data) {
-    data := &Data{}  // 逃逸
-    ch <- data
-}
+### 1.2 共享内存 (Shared Memory) 🤝
 
-// GOOD: 发送值（如果数据小）
-func producer(ch chan<- Data) {
-    data := Data{}  // 不逃逸
-    ch <- data
+**位置**: SM 片上内存
+
+#### 特性
+
+| 属性 | 值 |
+|------|-----|
+| 容量 | 16KB - 164KB per SM |
+| 速度 | ~1-32 cycles |
+| 带宽 | ~10-20 TB/s |
+| 作用域 | Block 内线程共享 |
+| 生命周期 | 内核执行期间 |
+| 关键字 | `__shared__` |
+
+#### 两种声明方式
+
+```cpp
+__global__ void kernel() {
+    // 1. 静态共享内存 - 编译时确定大小
+    __shared__ float static_share[256];
+    
+    // 2. 动态共享内存 - 启动时指定大小
+    extern __shared__ float dynamic_share[];
+    // 启动时: kernel<<<grid, block, shared_size>>>(...);
 }
 ```
 
-#### 3. 闭包捕获
+#### Bank 冲突 ⚠️
 
-```go
-// BAD: 被闭包捕获的变量可能逃逸
-func Counter() func() int {
-    count := 0  // 逃逸！
-    return func() int {
-        count++
-        return count
+共享内存被分为 32 个 Bank，每个 Bank 宽度为 4 字节。
+
+```
+Bank 0  Bank 1  Bank 2  ...  Bank 31
+  │       │       │            │
+  ▼       ▼       ▼            ▼
+┌─────┐ ┌─────┐ ┌─────┐     ┌─────┐
+│addr0│ │addr1│ │addr2│     │addr31│
+├─────┤ ├─────┤ ├─────┤     ├─────┤
+│addr32││addr33││addr34│     │addr63│
+└─────┘ └─────┘ └─────┘     └─────┘
+```
+
+**Bank 冲突类型**:
+
+| 访问模式 | 说明 | 性能 |
+|---------|------|------|
+| 无冲突 | 每个线程访问不同 Bank | ✅ 全速 |
+| 广播访问 | 多个线程读同一地址 | ✅ 广播优化 |
+| 2-way 冲突 | 2个线程访问同一Bank | ❌ 2倍延迟 |
+| N-way 冲突 | N个线程访问同一Bank | ❌ N倍延迟 |
+
+**避免 Bank 冲突的技巧**:
+
+```cpp
+// ❌ 可能冲突: stride = 32
+__shared__ float sh[1024];
+float val = sh[threadIdx.x];
+
+// ✅ 填充避免冲突: stride = 33 (增加一个padding)
+__shared__ float sh[1024 + 32];
+float val = sh[threadIdx.x + threadIdx.x / 32];
+```
+
+---
+
+### 1.3 常量内存 (Constant Memory) 📏
+
+**位置**: GPU 板载显存 + 专用缓存
+
+#### 特性
+
+| 属性 | 值 |
+|------|-----|
+| 容量 | 最多 64KB |
+| 速度 | ~1-30 cycles (命中缓存) |
+| 作用域 | 所有线程可读 |
+| 生命周期 | 应用程序级 |
+| 关键字 | `__constant__` |
+| 更新方式 | Host 端更新 |
+
+#### 使用方式
+
+```cpp
+// 声明常量内存 (文件作用域)
+__constant__ float const_data[256];
+
+// Host 端初始化
+float host_data[256] = {...};
+cudaMemcpyToSymbol(const_data, host_data, sizeof(host_data));
+
+// 内核中使用 (只读)
+__global__ void kernel(float* output) {
+    int idx = threadIdx.x;
+    output[idx] = const_data[idx] * 2.0f;
+}
+```
+
+**最佳适用场景**:
+- 所有线程访问相同数据
+- 只读数据
+- 小尺寸数据 (<64KB)
+
+---
+
+### 1.4 纹理内存 (Texture Memory) 🎨
+
+**位置**: GPU 板载显存 + 纹理缓存
+
+#### 特性
+
+| 属性 | 值 |
+|------|-----|
+| 容量 | 可达 GB 级 |
+| 速度 | ~10-100 cycles (空间局部性好时快) |
+| 作用域 | 所有线程 |
+| 访问模式 | 优化空间局部性访问 |
+| 特性 | 自动插值、边界处理 |
+
+#### 使用场景
+
+- 图像处理
+- 空间局部性好的访问模式
+- 需要插值或边界检查
+
+---
+
+### 1.5 本地内存 (Local Memory) 📍
+
+**位置**: 全局内存 (不是片上！)
+
+#### 特性
+
+| 属性 | 值 |
+|------|-----|
+| 容量 | 每个线程最多 512KB |
+| 速度 | 与全局内存相同 (~200-800 cycles) |
+| 作用域 | 单个线程私有 |
+| 触发条件 | 寄存器溢出 |
+
+**什么时候使用本地内存**:
+- 大数组无法放入寄存器时
+- 编译时大小未知的数组
+- 寄存器不足时的溢出
+
+**避免本地内存的方法**:
+- 减少每个线程的寄存器使用
+- 使用共享内存替代
+- 调整 Block 大小提高占用率
+
+```cpp
+__global__ void kernel() {
+    // 这个数组可能放在本地内存
+    float local_arr[100];  // 太大，寄存器放不下
+    
+    // 这个变量优先放在寄存器
+    float reg_var = 1.0f;
+}
+```
+
+---
+
+## 2. 内存访问模式与合并访问 🔗
+
+### 2.1 什么是合并访问？
+
+**合并访问 (Coalesced Memory Access)** 是指一个 Warp 内的 32 个线程访问全局内存时，能够合并成较少的内存事务。
+
+### 2.2 内存事务大小
+
+| 架构 | 缓存行大小 | 事务粒度 |
+|------|-----------|----------|
+| Kepler | 128 bytes | 32, 64, 128 bytes |
+| Maxwell/Pascal | 128 bytes | 32 bytes |
+| Volta/Ampere | 128 bytes | 32 bytes |
+
+### 2.3 访问模式对比
+
+#### ✅ 理想的合并访问
+
+```
+Warp 32个线程访问连续对齐的地址:
+
+Thread:  0   1   2   ...   31
+        ↓   ↓   ↓         ↓
+Addr:  0x0 0x4 0x8 ... 0x7C  (连续的 128 bytes)
+
+┌─────────────────────────────────┐
+│         单个 128-byte 事务      │
+└─────────────────────────────────┘
+```
+
+#### ⚠️ 有间隔的访问
+
+```
+每个线程间隔访问 (stride = 2):
+
+Thread:  0   1   2   ...   31
+        ↓   ↓   ↓         ↓
+Addr:  0x0 0x8 0x10 ... 0xF8
+
+需要 2 个事务，带宽利用率 50%
+```
+
+#### ❌ 完全随机访问
+
+```
+每个线程访问随机地址:
+
+Thread:  0    1    2    ...    31
+        ↓    ↓    ↓           ↓
+Addr:  乱序、分散的地址
+
+需要 32 个事务，带宽利用率 1/32
+```
+
+### 2.4 合并访问条件表
+
+| 数据类型 | 对齐要求 | 理想访问模式 |
+|---------|---------|-------------|
+| char (1B) | 1 byte | threadIdx.x |
+| short (2B) | 2 bytes | threadIdx.x |
+| int/float (4B) | 4 bytes | threadIdx.x |
+| long/double (8B) | 8 bytes | threadIdx.x |
+| float4 (16B) | 16 bytes | threadIdx.x |
+
+### 2.5 代码示例对比
+
+```cpp
+// ✅ 好: 合并访问
+__global__ void good_access(float* data, int n) {
+    int idx = blockIdx.x * 256 + threadIdx.x;
+    if (idx < n) {
+        data[idx] = data[idx] * 2.0f;  // Warp 内连续访问
+    }
+}
+
+// ❌ 坏: 非合并访问 (间隔访问)
+__global__ void bad_access(float* data, int n) {
+    int idx = blockIdx.x * 256 + threadIdx.x * 2;  // stride=2
+    if (idx < n) {
+        data[idx] = data[idx] * 2.0f;
+    }
+}
+
+// ✅ 修复: 调整索引模式
+__global__ void fixed_access(float* data, int n) {
+    int idx = blockIdx.x * 512 + threadIdx.x;
+    if (idx < n) {
+        data[idx * 2] = data[idx * 2] * 2.0f;
+        data[idx * 2 + 1] = data[idx * 2 + 1] * 2.0f;
     }
 }
 ```
 
-#### 4. interface 调用
+---
 
-```go
-// BAD: interface 方法调用可能导致逃逸
-func process(v io.Reader) {
-    buf := make([]byte, 1024)  // 可能逃逸
-    v.Read(buf)
-}
+## 3. 内存带宽计算 📐
 
-// GOOD: 使用具体类型
-func processFile(f *os.File) {
-    buf := make([]byte, 1024)  // 通常不逃逸
-    f.Read(buf)
-}
-```
-
-### 查看逃逸分析结果
-
-```bash
-# 查看详细逃逸分析
-go build -gcflags="-m -m" ./...
-
-# 只看逃逸
-go build -gcflags="-m" ./... 2>&1 | grep escape
-```
-
-### 输出解释
+### 3.1 理论带宽公式
 
 ```
-./main.go:10:2: moved to heap: x      // x 逃逸到堆
-./main.go:11:13: y does not escape   // y 不逃逸
-./main.go:12:13: z escapes to heap   // z 逃逸
+理论带宽 (GB/s) = 内存频率 (GHz) × 总线宽度 (bit) × 倍率 / 8
+
+其中:
+- 倍率: DDR=2, GDDR5=4, GDDR5X=8, HBM2=2
 ```
 
-## 内存对齐
+### 3.2 常见 GPU 理论带宽
 
-### 为什么需要对齐？
+| GPU | 显存类型 | 总线宽度 | 频率 | 理论带宽 |
+|-----|---------|---------|------|---------|
+| V100 | HBM2 | 4096 bit | 0.877 GHz | ~900 GB/s |
+| A100 | HBM2 | 5120 bit | 1.215 GHz | ~1555 GB/s |
+| RTX 3090 | GDDR6X | 384 bit | 1.215 GHz | ~936 GB/s |
+| RTX 4090 | GDDR6X | 384 bit | 1.313 GHz | ~1008 GB/s |
+| A10 | GDDR6 | 320 bit | 1.25 GHz | ~600 GB/s |
 
-1. **性能**: 现代 CPU 按字（word）访问内存，对齐的数据访问更快
-2. **原子操作**: 某些原子操作要求内存对齐
-3. **硬件要求**: 某些架构（如 ARM）对未对齐访问会崩溃
+### 3.3 实际带宽计算公式
 
-### 内存对齐规则
+```
+实际带宽 (GB/s) = (读取字节数 + 写入字节数) / 时间 / 1e9
 
-| 类型 | 对齐系数（字节） |
-|-----|----------------|
-| bool, uint8, int8 | 1 |
-| uint16, int16 | 2 |
-| uint32, int32, float32 | 4 |
-| uint64, int64, float64 | 8 |
-| 指针、map、chan、func | 8 (64位) / 4 (32位) |
-| struct | 最大字段的对齐系数 |
-
-### 结构体优化示例
-
-**BAD - 内存浪费**：
-```go
-// 实际占用: 32 字节（浪费 13 字节）
-type Bad struct {
-    a bool    // 1 字节
-    b int64   // 8 字节
-    c bool    // 1 字节
-    d int32   // 4 字节
-    e bool    // 1 字节
-}
+读取字节数 = 元素数量 × 元素大小
+写入字节数 = 元素数量 × 元素大小
 ```
 
-**内存布局**：
-```
-[a][padding x7][b][c][padding x3][d][e][padding x7]
-= 1 + 7 + 8 + 1 + 3 + 4 + 1 + 7 = 32 bytes
-```
+**示例代码 - 带宽测试**:
 
-**GOOD - 优化排列**：
-```go
-// 实际占用: 16 字节（无浪费）
-type Good struct {
-    b int64   // 8 字节
-    d int32   // 4 字节
-    a bool    // 1 字节
-    c bool    // 1 字节
-    e bool    // 1 字节
-}
-```
+```cpp
+#include <cuda_runtime.h>
+#include <iostream>
 
-**内存布局**：
-```
-[      b      ][   d   ][a][c][e][padding x5]
-= 8 + 4 + 1 + 1 + 1 + 5 = 20 bytes
-
-注意：struct 整体对齐到 8 字节，
-所以实际是 24 字节（64位系统）
-```
-
-### 自动化工具
-
-```bash
-# 使用 fieldalignment 检查和修复
-go install golang.org/x/tools/go/analysis/passes/fieldalignment/cmd/fieldalignment@latest
-
-fieldalignment ./path/to/package
-```
-
-## 内存管理策略
-
-### 1. 对象池 (sync.Pool)
-
-**适用场景**：
-- 频繁分配/释放的临时对象
-- 对象大小适中（不要太大或太小）
-- 对象生命周期短
-
-**最佳实践**：
-```go
-var bufferPool = sync.Pool{
-    New: func() interface{} {
-        return make([]byte, 4096)  // 4KB 缓冲区
-    },
-}
-
-func handleRequest() {
-    buf := bufferPool.Get().([]byte)
-    defer bufferPool.Put(buf)
-    // ... 使用 buf
-}
-```
-
-### 2. 预分配
-
-**BAD**：
-```go
-func process(n int) []int {
-    var result []int
-    for i := 0; i < n; i++ {
-        result = append(result, i)  // 多次扩容
+__global__ void copy_kernel(float* dst, const float* src, int n) {
+    int idx = blockIdx.x * 256 + threadIdx.x;
+    if (idx < n) {
+        dst[idx] = src[idx];
     }
-    return result
+}
+
+int main() {
+    int n = 1 << 26;  // 64M 元素
+    size_t bytes = n * sizeof(float);
+    
+    float *d_src, *d_dst;
+    cudaMalloc(&d_src, bytes);
+    cudaMalloc(&d_dst, bytes);
+    
+    // 预热
+    copy_kernel<<<n/256, 256>>>(d_dst, d_src, n);
+    cudaDeviceSynchronize();
+    
+    // 计时
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
+    
+    copy_kernel<<<n/256, 256>>>(d_dst, d_src, n);
+    
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    
+    float ms = 0;
+    cudaEventElapsedTime(&ms, start, stop);
+    
+    // 计算带宽: 读 + 写
+    float gb = (bytes * 2.0f) / (1 << 30);  // 转换为 GB
+    float gbps = gb / (ms / 1000.0f);       // GB/s
+    
+    std::cout << "带宽: " << gbps << " GB/s" << std::endl;
+    
+    cudaFree(d_src);
+    cudaFree(d_dst);
+    return 0;
 }
 ```
 
-**GOOD**：
-```go
-func process(n int) []int {
-    result := make([]int, 0, n)  // 预分配
-    for i := 0; i < n; i++ {
-        result = append(result, i)
-    }
-    return result
-}
+### 3.4 带宽利用率
+
+```
+带宽利用率 (%) = 实际带宽 / 理论带宽 × 100
 ```
 
-### 3. 避免不必要的指针
+**目标**: 达到理论带宽的 70%+ 就算优秀 🎯
 
-指针会增加逃逸概率，且：
-- 增加 GC 扫描工作量
-- 可能导致更多的缓存失效
-- 增加间接访问开销
+### 3.5 影响带宽的因素
 
-**权衡**：
-- 大对象（> 4KB）: 使用指针
-- 小对象（struct 几个字段）: 考虑值传递
-- 需要修改原对象: 必须用指针
+| 因素 | 影响 | 优化方向 |
+|------|------|---------|
+| 合并访问 | 影响最大 | 确保 Warp 内连续访问 |
+| 内存对齐 | 显著影响 | 使用 cudaMalloc (自动对齐) |
+| 数据类型 | 粒度影响 | 使用向量类型 (float2, float4) |
+| 缓存使用 | L2 缓存影响 | 利用数据局部性 |
+| 访问模式 | 读写比例 | 平衡读写，避免随机访问 |
 
-## 内存泄漏的常见模式
+---
 
-### 1. Goroutine 泄漏
+## 4. 内存优化总结 📋
 
-```go
-// BAD: goroutine 可能永远阻塞
-func leak() {
-    ch := make(chan int)
-    go func() {
-        val := <-ch  // 永远阻塞，因为没人发送
-        fmt.Println(val)
-    }()
-    // 函数返回，但 goroutine 没退出
-}
-```
+### 4.1 内存类型选择指南
 
-### 2. 未关闭的资源
+| 访问模式 | 推荐内存类型 |
+|---------|-------------|
+| 线程私有临时变量 | 寄存器 |
+| Block 内共享数据 | 共享内存 |
+| 全局只读小数据 | 常量内存 |
+| 空间局部性好的访问 | 纹理内存 |
+| 大尺寸数据读写 | 全局内存 |
 
-```go
-// BAD: 忘记关闭
-func processFile(path string) error {
-    f, err := os.Open(path)
-    if err != nil {
-        return err
-    }
-    // 可能提前返回，f 没关闭
-    // ...
-    return nil
-}
+### 4.2 优化优先级
 
-// GOOD: defer 关闭
-func processFile(path string) error {
-    f, err := os.Open(path)
-    if err != nil {
-        return err
-    }
-    defer f.Close()  // 确保关闭
-    // ...
-    return nil
-}
-```
+1. **合并访问** - 最关键的优化
+2. **减少全局内存访问** - 使用共享/寄存器
+3. **避免 Bank 冲突** - 共享内存优化
+4. **利用缓存层次** - L1/L2 缓存
+5. **数据预取** - 重叠计算与内存访问
 
-### 3. 全局 map 持有引用
+### 4.3 常见问题排查表
 
-```go
-// BAD: 全局 map 可能无限增长
-var cache = make(map[string]*BigObject)
+| 问题 | 可能原因 | 解决方案 |
+|------|---------|---------|
+| 带宽利用率低 | 非合并访问 | 调整索引模式 |
+| 共享内存性能差 | Bank 冲突 | 添加 padding 或调整访问模式 |
+| 寄存器溢出 | 每个线程寄存器太多 | 减少寄存器使用，调整 Block 大小 |
+| 常量内存性能差 | Warp 内访问不同地址 | 确保 Warp 内访问相同地址 |
 
-func addToCache(key string, obj *BigObject) {
-    cache[key] = obj  // 永远不会被 GC
-}
-```
+---
 
-## 内存分析工具
+## 总结 📝
 
-### 1. runtime.ReadMemStats
+| 关键概念 | 核心要点 |
+|---------|---------|
+| 全局内存 | 容量大但慢，必须合并访问 |
+| 共享内存 | 速度快但小，注意 Bank 冲突 |
+| 常量内存 | 只读小数据，所有线程同地址时最优 |
+| 本地内存 | 本质是全局内存，尽量避免 |
+| 合并访问 | Warp 内连续对齐访问，性能关键 |
+| 带宽计算 | 理论 vs 实际，衡量优化效果 |
 
-```go
-var stats runtime.MemStats
-runtime.ReadMemStats(&stats)
-fmt.Printf("HeapAlloc: %d MB\n", stats.HeapAlloc/1024/1024)
-fmt.Printf("HeapObjects: %d\n", stats.HeapObjects)
-```
-
-### 2. GODEBUG=gctrace=1
-
-```bash
-# 运行时查看 GC 追踪
-GODEBUG=gctrace=1 ./myapp
-```
-
-### 3. pprof heap profile
-
-```bash
-# 生成 heap profile
-curl http://localhost:6060/debug/pprof/heap > heap.pprof
-
-# 分析
-go tool pprof heap.pprof
-```
-
-## 深入阅读
-
-- [Go Memory Model](https://golang.org/ref/mem)
-- [Go GC Guide](https://blog.golang.org/ismmkeynote)
-- [Go 1.5 垃圾回收](https://blog.golang.org/go15gc)
+掌握内存模型是 CUDA 性能优化的核心！🎯

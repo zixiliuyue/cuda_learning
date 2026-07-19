@@ -1,0 +1,12 @@
+# Go
+/bin/
+*.exe
+agent-work/
+
+# 前端
+web/node_modules/
+web/dist/
+
+# 环境与密钥
+*.local
+.env

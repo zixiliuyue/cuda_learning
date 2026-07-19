@@ -1,0 +1,13 @@
+# QingTian Agent 配置示例
+log_level: info
+
+nsq:
+  nsqd_addr: "localhost:4150"
+  lookupd_addr: "localhost:4161"
+  max_in_flight: 16
+
+agent:
+  node_name: ""                       # 留空则自动使用主机名
+  control_plane_url: "http://localhost:8080"
+  heartbeat_interval: 5s
+  work_dir: "./agent-work"

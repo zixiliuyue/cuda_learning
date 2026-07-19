@@ -155,10 +155,16 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("QT_NSQD_ADDR"); v != "" {
 		cfg.NSQ.NSQDAddr = v
 	}
+	if v := os.Getenv("QT_NSQ_LOOKUPD_ADDR"); v != "" {
+		cfg.NSQ.LookupdAddr = v
+	}
 	if v := os.Getenv("QT_MINIO_ENDPOINT"); v != "" {
 		cfg.MinIO.Endpoint = v
 	}
 	if v := os.Getenv("QT_JWT_SECRET"); v != "" {
 		cfg.Auth.JWTSecret = v
+	}
+	if v := os.Getenv("QT_CONTROL_PLANE_URL"); v != "" {
+		cfg.Agent.ControlPlaneURL = v
 	}
 }

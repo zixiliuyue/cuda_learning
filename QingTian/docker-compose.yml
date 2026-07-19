@@ -1,0 +1,141 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:6
+    container_name: qingtian-mongodb
+    restart: unless-stopped
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - qingtian-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: qingtian-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - qingtian-network
+
+  nsqlookupd:
+    image: nsqio/nsq:v1.2.1
+    container_name: qingtian-nsqlookupd
+    restart: unless-stopped
+    command: /nsqlookupd
+    networks:
+      - qingtian-network
+
+  nsqd:
+    image: nsqio/nsq:v1.2.1
+    container_name: qingtian-nsqd
+    restart: unless-stopped
+    command: /nsqd --lookupd-tcp-address=nsqlookupd:4160
+    depends_on:
+      - nsqlookupd
+    networks:
+      - qingtian-network
+
+  minio:
+    image: minio/minio:latest
+    container_name: qingtian-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    networks:
+      - qingtian-network
+
+  apiserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: qingtian-apiserver
+    restart: unless-stopped
+    command: ./apiserver -config configs/apiserver.yaml
+    environment:
+      QT_MONGO_URI: mongodb://mongodb:27017
+      QT_REDIS_ADDR: redis:6379
+      QT_NSQD_ADDR: nsqd:4150
+      QT_NSQ_LOOKUPD_ADDR: nsqlookupd:4161
+      QT_MINIO_ENDPOINT: minio:9000
+      QT_JWT_SECRET: qingtian-secret-key
+    depends_on:
+      - mongodb
+      - redis
+      - nsqd
+      - minio
+    networks:
+      - qingtian-network
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: qingtian-scheduler
+    restart: unless-stopped
+    command: ./scheduler -config configs/scheduler.yaml
+    environment:
+      QT_MONGO_URI: mongodb://mongodb:27017
+      QT_REDIS_ADDR: redis:6379
+      QT_NSQD_ADDR: nsqd:4150
+      QT_NSQ_LOOKUPD_ADDR: nsqlookupd:4161
+      QT_MINIO_ENDPOINT: minio:9000
+    depends_on:
+      - mongodb
+      - redis
+      - nsqd
+      - minio
+    networks:
+      - qingtian-network
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: qingtian-agent
+    restart: unless-stopped
+    command: ./agent -config configs/agent.yaml
+    environment:
+      QT_MONGO_URI: mongodb://mongodb:27017
+      QT_REDIS_ADDR: redis:6379
+      QT_NSQD_ADDR: nsqd:4150
+      QT_NSQ_LOOKUPD_ADDR: nsqlookupd:4161
+      QT_MINIO_ENDPOINT: minio:9000
+      QT_CONTROL_PLANE_URL: http://apiserver:8080
+    depends_on:
+      - mongodb
+      - redis
+      - nsqd
+      - minio
+    networks:
+      - qingtian-network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: qingtian-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    environment:
+      - NGINX_PORT=80
+      - API_SERVER=apiserver
+    depends_on:
+      - apiserver
+    networks:
+      - qingtian-network
+
+volumes:
+  mongodb_data:
+  redis_data:
+  minio_data:
+
+networks:
+  qingtian-network:
+    driver: bridge

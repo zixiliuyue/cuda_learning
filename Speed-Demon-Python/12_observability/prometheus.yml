@@ -1,0 +1,31 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'python-service-monitor'
+
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'python-service'
+    static_configs:
+      - targets: ['host.docker.internal:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+    scrape_timeout: 3s
+
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        replacement: 'python-service'
+
+  - job_name: 'fastapi-health'
+    metrics_path: '/health'
+    static_configs:
+      - targets: ['host.docker.internal:8000']
+    scrape_interval: 30s
