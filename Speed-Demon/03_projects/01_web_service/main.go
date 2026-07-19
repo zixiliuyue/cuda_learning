@@ -89,9 +89,6 @@ func goodUserHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	pooledBuf := bufPool.Get().(*[]byte)
-	defer bufPool.Put(pooledBuf)
-	
 	json.NewEncoder(w).Encode(user)
 }
 

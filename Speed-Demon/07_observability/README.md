@@ -4,6 +4,111 @@
 
 ---
 
+## 🚀 快速开始：5 分钟搭好监控
+
+### 1. 启动示例服务
+
+```bash
+cd 07_observability
+go run metrics_example.go
+```
+
+服务启动后，访问：
+- **API 接口**: http://localhost:8080/api/product?id=123
+- **Metrics 端点**: http://localhost:8080/metrics
+- **Stats**: http://localhost:8080/stats
+
+### 2. 启动 Prometheus（Docker 方式）
+
+创建 `prometheus.yml` 配置文件：
+```yaml
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: 'go-app'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+```
+
+启动 Prometheus：
+```bash
+docker run -d \
+  --name prometheus \
+  -p 9090:9090 \
+  -v $(pwd)/prometheus.yml:/etc/prometheus/prometheus.yml \
+  prom/prometheus
+```
+
+访问 Prometheus: http://localhost:9090
+
+### 3. 启动 Grafana（Docker 方式）
+
+```bash
+docker run -d \
+  --name grafana \
+  -p 3000:3000 \
+  grafana/grafana
+```
+
+访问 Grafana: http://localhost:3000 (默认账号密码: admin/admin)
+
+### 4. 导入仪表盘
+
+1. 登录 Grafana
+2. 点击左侧菜单：**Dashboards** → **New** → **Import**
+3. 上传 `example_grafana_dashboard.json` 文件，或粘贴 JSON 内容
+4. 选择 Prometheus 数据源，点击 Import
+
+### 5. 生成测试流量
+
+新开一个终端，压测接口：
+```bash
+hey -n 10000 -c 100 http://localhost:8080/api/product?id=123
+```
+
+然后去 Grafana 看实时监控效果！
+
+---
+
+## 📊 Metrics 示例代码说明
+
+`metrics_example.go` 包含以下核心功能：
+
+### 1. HTTP 中间件 Metrics
+
+```go
+// 请求总数
+http_requests_total{path, method, status}
+
+// 请求延迟直方图
+http_request_duration_seconds{path, method}
+
+// 正在处理的请求数
+http_request_in_flight
+```
+
+### 2. 业务 Metrics
+
+```go
+// 缓存命中/未命中
+cache_hit_total
+cache_miss_total
+
+// DB 查询延迟
+db_query_duration_seconds{operation}
+```
+
+### 3. Go Runtime Metrics
+
+自动暴露的 Go 运行时指标：
+- `go_goroutines` - Goroutine 数量
+- `go_memstats_alloc_bytes` - 内存分配
+- `go_gc_duration_seconds` - GC 耗时
+- 等等...
+
+---
+
 ## ⭐ 四个黄金指标 Four Golden Signals
 
 **面试直接说这 4 个，直接亮瞎面试官！**
@@ -214,34 +319,34 @@ var (
 > **你回答：**
 
 > "我一般按这几步排查：
->
+
 > **第一步：先看四个黄金指标**
 > 先看监控大盘，先搞清楚：
 > - 是所有接口都慢，还是只有这一个？
 > - 是什么时候开始的？那个时间点有没有发布？流量有没有涨？
 > - 错误率有没有涨？是变慢还是报错了？
 > - CPU/内存/DB/Redis 哪个指标先异常？
->
+
 > **第二步：看链路追踪找瓶颈点**
 > 捞一个慢请求的 trace，看时间都花在哪一步了：
 > - 是 DB 慢？是哪个 SQL？有没有全表扫描？
 > - 是 Redis 慢？命中率低？还是连接池满了？
 > - 是调用其他下游服务慢？
 > - 还是业务代码本身慢？
->
+
 > **第三步：用 profile 深入定位**
 > - 如果 CPU 高：抓 CPU profile 看热点函数在哪？
 > - 如果内存涨：抓 heap profile 看哪分配多？
 > - 如果锁看起来有问题：抓 mutex profile 看锁等待时间？
 > - 如果怀疑 GC：抓 trace 看 GC 停顿和 Mark Assist？
 > - Goroutine 涨：抓 goroutine profile 看都堵在哪？
->
+
 > **第四步：定位根因，修复验证**
 > 找到根因后修复，然后：
 > - 先在测试环境压测确认优化有效
 > - 灰度发布观察核心指标有没有回去
 > - 最后加入 checklist/code review 避免再犯
->
+
 > **最后复盘总结**：
 > 有没有监控告警能不能更早发现？要不要加什么新的告警？
 
@@ -316,3 +421,13 @@ var (
 
 5. **能复现就不是问题！**
    - 能在测试环境稳定复现 = 离解决不远了！
+
+---
+
+## 📁 本目录文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `metrics_example.go` | Prometheus Metrics 完整示例代码 |
+| `example_grafana_dashboard.json` | Grafana 仪表盘配置 |
+| `README.md` | 本文档 |
