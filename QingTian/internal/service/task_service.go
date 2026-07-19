@@ -55,6 +55,10 @@ type TaskService struct {
 	// 锁保护下"加载共享快照 -> 调度 -> 写回"，实现多实例共享同一占用视图，
 	// 避免每轮都从 MongoDB 全量重建。未注入时回退到从 MongoDB 重建。
 	ledgerStore cache.Cache
+
+	// ledgerVersion 是 SyncLedger 加载到的快照版本，写回时用它做 CAS 校验。
+	// 仅当 ledgerStore != nil 时有效。
+	ledgerVersion int64
 }
 
 // ledgerSnapshotKey 是账本快照在共享存储中的键。
@@ -255,9 +259,9 @@ func (s *TaskService) RebuildLedger(ctx context.Context) error {
 // SyncLedger 在每轮调度前准备账本，是账本一致性的入口。
 //
 // 注入了共享存储（ledgerStore）时走"共享快照"路径：加载 Redis 中的账本快照，
-// 再登记全部节点容量（纳入运行期新增/变更节点，保留既有占用）；共享存储中
-// 尚无快照（首次启动）时回退为从 MongoDB 全量重建。未注入共享存储时，
-// 始终从 MongoDB 全量重建，保持既有行为。
+// 记录其版本号，再登记全部节点容量（纳入运行期新增/变更节点，保留既有占用）；
+// 共享存储中尚无快照（首次启动）时回退为从 MongoDB 全量重建，并将初始版本
+// 设为 1。未注入共享存储时，始终从 MongoDB 全量重建，保持既有行为。
 //
 // 该方法应在持有调度 leader 锁期间调用，从而保证"加载->调度->写回"串行化。
 func (s *TaskService) SyncLedger(ctx context.Context) error {
@@ -269,15 +273,18 @@ func (s *TaskService) SyncLedger(ctx context.Context) error {
 		return err
 	}
 	if !ok || data == "" {
-		// 共享存储尚无快照：从 MongoDB 全量重建，并写回作为初始快照。
+		// 共享存储尚无快照：从 MongoDB 全量重建，并将初始版本设为 1。
 		if err := s.RebuildLedger(ctx); err != nil {
 			return err
 		}
-		return s.PersistLedger(ctx)
+		s.ledgerVersion = 1 // 首次写回用版本 1
+		return nil
 	}
-	if err := s.sched.LoadLedgerSnapshot([]byte(data)); err != nil {
+	version, err := s.sched.LoadLedgerSnapshot([]byte(data))
+	if err != nil {
 		return err
 	}
+	s.ledgerVersion = version
 	// 在共享快照之上登记节点容量，纳入运行期新增/变更节点（保留既有占用）。
 	nodes, err := s.nodeRepo.List(ctx)
 	if err != nil {
@@ -287,18 +294,62 @@ func (s *TaskService) SyncLedger(ctx context.Context) error {
 	return nil
 }
 
-// PersistLedger 将当前账本状态写回共享存储，供其它调度器实例复用。
+// PersistLedger 将当前账本状态 CAS 写回共享存储，供其它调度器实例复用。
 //
-// 未注入共享存储时为空操作。应在完成本轮调度后、释放 leader 锁前调用。
-func (s *TaskService) PersistLedger(ctx context.Context) error {
+// 若快照在调度期间被其它实例修改（版本号跳变），则放弃写回并返回 false。
+// 这是安全的：下一轮 SyncLedger 会从新版本快照重建，已分配的任务已持久化
+// 在数据库中，不会丢失。未注入共享存储时空操作。
+func (s *TaskService) PersistLedger(ctx context.Context) (bool, error) {
 	if s.ledgerStore == nil {
-		return nil
+		return true, nil
 	}
-	data, err := s.sched.DumpLedgerSnapshot()
+	oldData, ok, err := s.ledgerStore.Get(ctx, ledgerSnapshotKey)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return s.ledgerStore.Set(ctx, ledgerSnapshotKey, string(data), 0)
+	if !ok {
+		// 并发删除导致无快照：视为首次写入，直接 Set。
+		nextVersion := s.ledgerVersion + 1
+		newData, err := s.sched.DumpLedgerSnapshot(nextVersion)
+		if err != nil {
+			return false, err
+		}
+		return true, s.ledgerStore.Set(ctx, ledgerSnapshotKey, string(newData), 0)
+	}
+	// 解析快照中实际的版本号，与本地加载时记录的版本比较。
+	// 版本不匹配说明快照在调度期间已被其它实例修改，放弃写回。
+	actualVersion, err := parseSnapshotVersion([]byte(oldData))
+	if err != nil {
+		return false, err
+	}
+	if actualVersion != s.ledgerVersion {
+		return false, nil
+	}
+	nextVersion := s.ledgerVersion + 1
+	newData, err := s.sched.DumpLedgerSnapshot(nextVersion)
+	if err != nil {
+		return false, err
+	}
+	ok, err = s.ledgerStore.SetCAS(ctx, ledgerSnapshotKey, oldData, string(newData), 0)
+	if err != nil {
+		return false, err
+	}
+	if ok {
+		s.ledgerVersion = nextVersion // CAS 成功，更新本地版本记录
+	}
+	return ok, nil
+}
+
+// parseSnapshotVersion 从快照 JSON 中提取版本号（v 字段）。
+// 格式损坏时返回错误。
+func parseSnapshotVersion(data []byte) (int64, error) {
+	var v struct {
+		Version int64 `json:"v"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return 0, err
+	}
+	return v.Version, nil
 }
 
 // ScheduleOnce 从队列取出一个任务并尝试调度、下发。

@@ -20,14 +20,19 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 	freeBefore := l.NodeFreeMemory("node1")
 
-	// 序列化再反序列化到新账本。
-	data, err := l.MarshalSnapshot()
+	// 序列化再反序列化到新账本，带上版本号。
+	const testVersion = 100
+	data, err := l.MarshalSnapshot(testVersion)
 	if err != nil {
 		t.Fatalf("序列化快照应成功: %v", err)
 	}
 	l2 := New()
-	if err := l2.LoadSnapshot(data); err != nil {
+	version, err := l2.LoadSnapshot(data)
+	if err != nil {
 		t.Fatalf("加载快照应成功: %v", err)
+	}
+	if version != testVersion {
+		t.Errorf("版本号应保持一致，期望 %d，实际 %d", testVersion, version)
 	}
 
 	if free := l2.NodeFreeMemory("node1"); free != freeBefore {
@@ -41,13 +46,17 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
-// TestLoadSnapshotEmpty 验证空数据视为空账本。
+// TestLoadSnapshotEmpty 验证空数据视为空账本，返回版本 0。
 func TestLoadSnapshotEmpty(t *testing.T) {
 	l := New()
 	node := newTestNode("node1", 1, 8192)
 	l.SyncNode(node)
-	if err := l.LoadSnapshot(nil); err != nil {
+	version, err := l.LoadSnapshot(nil)
+	if err != nil {
 		t.Fatalf("加载空快照应成功: %v", err)
+	}
+	if version != 0 {
+		t.Errorf("空快照版本应为 0，实际 %d", version)
 	}
 	if free := l.NodeFreeMemory("node1"); free != 0 {
 		t.Errorf("空快照应清空账本，节点不再登记，剩余期望 0，实际 %d", free)

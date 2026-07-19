@@ -136,17 +136,17 @@ func (s *Scheduler) RebuildLedger(nodes []*domain.Node, activeTasks []*domain.Ta
 	}
 }
 
-// LoadLedgerSnapshot 从共享存储的 JSON 快照恢复账本状态。
+// LoadLedgerSnapshot 从共享存储的 JSON 快照恢复账本状态，返回快照中的版本号。
 //
 // 用于多调度器实例共享同一份占用视图：本实例成为 leader 后先加载最新快照，
 // 再在其上做调度决策，决策完成后调用 DumpLedgerSnapshot 写回，实现跨实例一致。
-func (s *Scheduler) LoadLedgerSnapshot(data []byte) error {
+func (s *Scheduler) LoadLedgerSnapshot(data []byte) (int64, error) {
 	return s.ledger.LoadSnapshot(data)
 }
 
-// DumpLedgerSnapshot 将当前账本状态序列化为 JSON 快照，供写回共享存储。
-func (s *Scheduler) DumpLedgerSnapshot() ([]byte, error) {
-	return s.ledger.MarshalSnapshot()
+// DumpLedgerSnapshot 将当前账本状态序列化为 JSON 快照（附带指定版本号），供写回共享存储。
+func (s *Scheduler) DumpLedgerSnapshot(version int64) ([]byte, error) {
+	return s.ledger.MarshalSnapshot(version)
 }
 
 // SyncNodes 将全部节点的 GPU 容量登记进账本（保留既有占用）。

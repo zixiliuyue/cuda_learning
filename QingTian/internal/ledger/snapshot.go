@@ -14,7 +14,7 @@ import (
 // migSnapshot 是单个 MIG 实例的可序列化快照。
 type migSnapshot struct {
 	ID          string `json:"id"`
-	ParentUUID  string `json:"parent_uuid"`
+	ParentUUID  string `json:"parent_uuid,omitempty"`
 	MemoryMB    int64  `json:"memory_mb"`
 	Allocatable bool   `json:"allocatable"`
 	Used        bool   `json:"used"`
@@ -23,19 +23,20 @@ type migSnapshot struct {
 // gpuSnapshot 是单块 GPU 账户的可序列化快照。
 type gpuSnapshot struct {
 	UUID        string        `json:"uuid"`
-	Vendor      domain.Vendor `json:"vendor"`
-	Model       string        `json:"model"`
+	Vendor      domain.Vendor `json:"vendor,omitempty"`
+	Model       string        `json:"model,omitempty"`
 	MemoryTotal int64         `json:"memory_total"`
 	MemoryUsed  int64         `json:"memory_used"`
 	Allocated   int           `json:"allocated"`
 	Allocatable bool          `json:"allocatable"`
 	Exclusive   bool          `json:"exclusive"`
-	MIGEnabled  bool          `json:"mig_enabled"`
+	MIGEnabled  bool          `json:"mig_enabled,omitempty"`
 	MIGs        []migSnapshot `json:"migs,omitempty"`
 }
 
 // Snapshot 是整个账本的可序列化快照。
 type Snapshot struct {
+	Version  int64               `json:"v"` // 版本号，每次成功写回自增 1，用于 CAS
 	GPUs     []gpuSnapshot       `json:"gpus"`
 	NodeGPUs map[string][]string `json:"node_gpus"`
 }
@@ -119,22 +120,24 @@ func (l *Ledger) Import(snap Snapshot) {
 }
 
 // MarshalSnapshot 将当前账本状态序列化为 JSON 字节，供写入共享存储。
-func (l *Ledger) MarshalSnapshot() ([]byte, error) {
-	return json.Marshal(l.Export())
+func (l *Ledger) MarshalSnapshot(version int64) ([]byte, error) {
+	snap := l.Export()
+	snap.Version = version
+	return json.Marshal(snap)
 }
 
-// LoadSnapshot 从 JSON 字节反序列化并覆盖账本状态。
+// LoadSnapshot 从 JSON 字节反序列化并覆盖账本状态，同时返回快照中的版本号。
 //
-// 空字节视为空账本（无占用），用于共享存储中尚无快照时的首次加载。
-func (l *Ledger) LoadSnapshot(data []byte) error {
+// 空字节视为空账本（无占用），用于共享存储中尚无快照时的首次加载，版本为 0。
+func (l *Ledger) LoadSnapshot(data []byte) (int64, error) {
 	if len(data) == 0 {
 		l.Reset()
-		return nil
+		return 0, nil
 	}
 	var snap Snapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
-		return err
+		return 0, err
 	}
 	l.Import(snap)
-	return nil
+	return snap.Version, nil
 }

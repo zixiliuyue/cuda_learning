@@ -110,9 +110,13 @@ func runSchedulerLoop(ctx context.Context, log logInterface, cfg *config.Config,
 			} else if killed > 0 {
 				log.Info("已终止超时任务", "count", killed)
 			}
-			// 写回账本快照，供其它调度器实例复用（释放锁前完成）。
-			if err := taskSvc.PersistLedger(ctx); err != nil {
+			// CAS 写回账本快照：若快照在调度期间被其它实例修改，
+			// 则放弃写入（安全降级：下一轮从最新快照重建即可）。
+			ok, err := taskSvc.PersistLedger(ctx)
+			if err != nil {
 				log.Error("写回资源账本快照失败", "error", err)
+			} else if !ok {
+				log.Info("账本快照已被其它实例更新，本轮放弃写回")
 			}
 			_ = infra.Cache.Release(ctx, lockKey)
 		}
