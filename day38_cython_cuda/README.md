@@ -149,3 +149,22 @@ python demo.py
 .\build.bat                       # 已包含 CMake 步骤
 .\build\Release\cython_cuda_demo.exe
 ```
+
+---
+
+## 验收标准
+
+完成本天学习后，你应当能够观察到并解释以下现象，才算真正掌握：
+
+1. **独立 Kernel 自检全部通过**：运行 `cython_cuda_demo.exe`，「Kernel 正确性汇总」表格中向量加法（1M 元素）与矩阵乘法（256x256）两项均显示「通过」，程序以 `[主机] 程序正常退出。` 结束，说明裸 CUDA Kernel 逻辑正确。
+2. **Cython 扩展编译成功**：执行 `python setup.py build_ext --inplace` 后，`python/` 目录生成 `cuda_cython.*.pyd`（Windows）或 `cuda_cython.*.so`（Linux），`import cuda_cython` 不报错，证明 `.pyx` 转译、`nvcc` 编译 `.cu`、链接 cudart 三步流水线全部走通。
+3. **Python 调用结果与 NumPy 一致**：`cuda_cython.vector_add(a, b)` 满足 `np.allclose(c, a+b, atol=1e-4)`，`cuda_cython.matmul(A, B)` 满足 `np.allclose(C, A@B, atol=1e-2)`，说明 `PyArray_DATA` 取指针零拷贝传给 CUDA 的链路正确。
+4. **能解释 extern "C" 的必要性**：你能说明如果去掉 `extern "C"`，C++ 名称修饰会导致 Cython 链接期找不到 `vector_add_wrapper` / `matmul_wrapper` 符号。
+
+## 动手挑战
+
+以下任务基于本天 `src/main.cu` 的真实实现，循序渐进地加深理解：
+
+1. **验证 CYTHON_BUILD 宏的隔离作用**：观察 `main()` 被 `#ifndef CYTHON_BUILD` 包裹的写法，理解为什么 Cython 编译时要定义该宏——尝试在 setup.py 中去掉对应定义，看是否会因 `main` 符号重复而链接失败。
+2. **新增一个包装函数并暴露到 Cython**：仿照 `vector_add_wrapper`，在 `extern "C"` 块中实现 `vector_scale_wrapper(const float* a, float* out, float s, int n)`，在 `cuda_wrapper.h` 声明、在 `cython_wrapper.pyx` 用 `cdef extern` 引入并写 Python 包装，重新编译后在 `demo.py` 里调用验证。
+3. **量化调用开销对比三种方案**：用 `demo.py` 里的计时思路，测量同一 `matmul` 在 Cython、以及 Day36 的 pybind11、Day37 的 ctypes 三种绑定下的往返耗时，结合 README 的对比表，实测验证「Cython/pybind11 调用开销低于 ctypes」的结论。

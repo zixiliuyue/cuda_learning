@@ -9,6 +9,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -47,20 +48,21 @@ func main() {
 	}
 	defer infra.Close(ctx)
 
-	// 组装调度所需依赖。账本需要从节点仓储加载已注册节点的 GPU 容量。
+	// 组装调度所需依赖。账本状态存放于 Redis 共享快照，多个调度器实例
+	// 在 leader 锁保护下"加载->调度->写回"，因此此处只需创建空账本。
 	resLedger := ledger.New()
-	nodes, err := infra.Store.Nodes().List(ctx)
-	if err == nil {
-		for _, n := range nodes {
-			resLedger.SyncNode(n)
-		}
-	}
 	sched := scheduler.New(resLedger, cfg.Scheduler.Strategy)
 	tracer := tracing.NewTracer(tracing.NewSlogExporter(log))
-	taskSvc := service.NewTaskService(infra.Store.Tasks(), infra.Store.Nodes(), infra.Cache, infra.Producer, sched).WithTracer(tracer)
+	taskSvc := service.NewTaskService(infra.Store.Tasks(), infra.Store.Nodes(), infra.Cache, infra.Producer, sched).
+		WithTracer(tracer).WithLedgerStore(infra.Cache)
 
 	// 启动调度循环。
-	go runSchedulerLoop(ctx, log, cfg, infra, taskSvc)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runSchedulerLoop(ctx, log, cfg, infra, taskSvc)
+	}()
 
 	log.Info("调度器服务已启动")
 	quit := make(chan os.Signal, 1)
@@ -68,7 +70,7 @@ func main() {
 	<-quit
 	log.Info("正在关闭调度器服务...")
 	cancel()
-	time.Sleep(200 * time.Millisecond) // 给循环退出留出时间
+	wg.Wait() // 等待调度循环真正退出，确保锁释放与在途处理完成
 }
 
 // runSchedulerLoop 是调度器主循环。
@@ -90,6 +92,14 @@ func runSchedulerLoop(ctx context.Context, log logInterface, cfg *config.Config,
 			if err != nil || !acquired {
 				continue
 			}
+			// 准备账本：优先加载 Redis 共享快照并纳入运行期节点变更；共享存储
+			// 尚无快照时回退为从 MongoDB 全量重建。失败则跳过本轮，避免在错误
+			// 账本上调度导致超卖。
+			if err := taskSvc.SyncLedger(ctx); err != nil {
+				log.Error("准备资源账本失败，跳过本轮调度", "error", err)
+				_ = infra.Cache.Release(ctx, lockKey)
+				continue
+			}
 			// 批量调度：单轮最多处理 100 个任务，防止长期占用锁。
 			if _, err := taskSvc.ScheduleBatch(ctx, 100); err != nil {
 				log.Error("批量调度任务失败", "error", err)
@@ -99,6 +109,10 @@ func runSchedulerLoop(ctx context.Context, log logInterface, cfg *config.Config,
 				log.Error("超时防护巡检失败", "error", err)
 			} else if killed > 0 {
 				log.Info("已终止超时任务", "count", killed)
+			}
+			// 写回账本快照，供其它调度器实例复用（释放锁前完成）。
+			if err := taskSvc.PersistLedger(ctx); err != nil {
+				log.Error("写回资源账本快照失败", "error", err)
 			}
 			_ = infra.Cache.Release(ctx, lockKey)
 		}

@@ -207,3 +207,22 @@ python python\demo.py
 4. `autograd.Function` 的 forward/backward 输入输出**个数、顺序一一对应**。
 5. LayerNorm 前向输出 `mean/rstd` 供反向复用，是减少重复计算的常见工程技巧。
 6. `setup.py` 用 `CUDAExtension` + `BuildExtension` 即可把 CUDA 源码编成可导入的模块。
+
+---
+
+## 验收标准
+
+完成本天学习后，你应当能够观察到并解释以下现象，才算真正掌握：
+
+1. **裸 Kernel 逻辑独立验证通过**：运行 `verify_kernels`（CMake 产物），四项（ReLU 前向/反向、LayerNorm 前向）均打印「通过」，最后「总体结果: 全部通过」——这说明四个 `.cu` 里的 `__global__` Kernel 在不依赖 PyTorch 的情况下逻辑正确。
+2. **PyTorch 扩展成功编译并被识别**：`python setup.py install` 后运行 `python python/demo.py`，打印 `[扩展] cuda_custom_ops 已编译: True`，说明 `CUDAExtension` + `PYBIND11_MODULE(TORCH_EXTENSION_NAME, ...)` 的编译链路走通。
+3. **前向与 PyTorch 原生结果一致**：demo 中 ReLU「前向最大误差 0.00e+00 -> 通过」、LayerNorm「前向最大误差」在约 1e-6 量级 -> 通过，证明自定义算子与 `torch.relu` / `torch.nn.functional.layer_norm` 数值对齐。
+4. **反向梯度通过 autograd 校验**：ReLU、LayerNorm 的反向「grad_input 最大误差」落在容差内并显示「通过」，说明 `torch.autograd.Function` 的 forward/backward 串联正确，自定义算子能真正参与反向传播。
+
+## 动手挑战
+
+以下任务基于本天真实代码（四个 Kernel + `verify_main.cu` + `custom_ops.py`）循序渐进地加深理解：
+
+1. **验证 WITH_TORCH 的双目标机制**：先用 CMake 编译 `verify_kernels`（未定义 `WITH_TORCH`，只含裸 Kernel），再用 `setup.py` 编译扩展（定义 `WITH_TORCH`，含绑定层）。对比两者，说明为什么 `PYBIND11_MODULE` 只放在 `relu_forward.cu` 一处、其余文件用前向声明。
+2. **给 LayerNorm 反向补齐 gamma/beta 的梯度**：当前反向重点演示对 `input` 的梯度。参考前向 Kernel 保存的 `mean/rstd`，在 `layer_norm_backward.cu` 中新增对 `gamma`、`beta` 的梯度计算，并在 `custom_ops.py` 的 `backward` 中按输入顺序返回对应梯度（无梯度项返回 `None`），用 `torch.autograd.gradcheck` 验证。
+3. **新增一个自定义算子走完整流程**：仿照 ReLU，实现一个 `GELU` 或 `SiLU` 算子的前向/反向 Kernel，在 `relu_forward.cu` 的 `PYBIND11_MODULE` 中 `m.def` 注册，编译后在 `custom_ops.py` 里用 `torch.autograd.Function` 封装，最后在 `demo.py` 与 PyTorch 原生实现做数值对比，走通「写 Kernel → 绑定 → 编译 → autograd 封装 → 验证」全链路。

@@ -1,16 +1,20 @@
 <script setup>
 // 登录页：用户输入用户名密码登录，成功后保存令牌并跳转主页。
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { Message } from '@arco-design/web-vue'
 import { authApi } from '../api'
+import { useAuthStore } from '../store/auth'
 
 const router = useRouter()
+const route = useRoute()
+const auth = useAuthStore()
 const form = ref({ username: '', password: '' })
 const loading = ref(false)
 
 // 处理登录提交。
 async function handleLogin() {
+  if (loading.value) return
   if (!form.value.username || !form.value.password) {
     Message.warning('请输入用户名和密码')
     return
@@ -18,10 +22,11 @@ async function handleLogin() {
   loading.value = true
   try {
     const res = await authApi.login(form.value.username, form.value.password)
-    localStorage.setItem('qt_token', res.token)
-    localStorage.setItem('qt_user', JSON.stringify(res.user))
+    auth.setAuth(res.token, res.user)
     Message.success('登录成功')
-    router.push('/dashboard')
+    // 支持登录后回跳到原访问页面。
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
+    router.push(redirect)
   } catch (e) {
     // 错误已由拦截器统一提示。
   } finally {

@@ -115,6 +115,11 @@ python hello_cuda.py
 | **第七阶段: Python 封装** | Day 36-38 | pybind11、ctypes、Cython 三种 CUDA Python 封装方式 |
 | **第八阶段: 扩展实战** | **Day 39-40** | **NCCL 多GPU通信、PyTorch CUDA Extension 完整实战** |
 
+> 📖 完整的每日目标、阶段承接关系与 40 天总目标见 [CUDA_40天学习大纲.md](CUDA_40天学习大纲.md)。
+> ✅ 每个阶段结束时用 [STAGE_CHECKLISTS.md](STAGE_CHECKLISTS.md) 自评是否可进入下一阶段。
+> 每个 `dayXX/README.md` 都包含「学习目标 / 核心概念 / 验收标准 / 动手挑战」，全部 40 天已补齐。
+> 🚀 想进一步走向 AI Infra（大模型训练/推理/部署）？见进阶扩展路线 [CUDA_进阶大纲_Day41-90.md](CUDA_进阶大纲_Day41-90.md)（Triton / LLM 推理 / 模型压缩 / 分布式训练 / 通信存储）。
+
 ---
 
 ## 公共工具库 (`common/`)

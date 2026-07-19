@@ -164,3 +164,22 @@ A: 不能。CUDA IPC 仅限于**同一台物理机**内的进程。跨机器通�
 
 - [CUDA Runtime API — Interprocess Communication](https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__DEVICE.html)
 - [CUDA C++ Programming Guide — Interprocess Communication](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#interprocess-communication)
+
+---
+
+## 验收标准
+
+完成本天学习后，运行 `cuda_ipc.exe`，你应当能够观察到并解释以下现象，才算真正掌握：
+
+1. **共享显存读写校验通过**：演示 1 中生产者写入 `MAGIC_VALUE + i`、消费者原地乘 2，最终 `[校验] 消费者写入对生产者可见` 应显示「通过」——这证明两个指针指向的是同一块物理显存，而非各自的副本。
+2. **能读懂 IPC 句柄的字节本质**：程序打印的 `IPC 句柄 (前 8 字节)` 是一串十六进制，且 `IPC 句柄总大小` 为固定值（通常 64 字节）；你应能解释为什么它可以被当作定长字节序列经 socket / 共享内存传给另一进程。
+3. **P2P 演示按 GPU 数量正确分支**：演示 2 在单 GPU 环境应打印「跳过 P2P 拷贝演示」，在多 GPU 环境则打印拷贝的数据量与 P2P 直连是否支持——能据此判断当前机器的硬件拓扑。
+4. **三项演示状态汇总正确**：结尾总结表格中「IPC 共享显存读写校验 = 通过」「IPC 事件同步 = 已演示」，且程序以 `[主机] 程序正常退出。` 结束，无 `operation not supported` 类错误。
+
+## 动手挑战
+
+以下任务基于本天 `src/main.cu` 的真实实现，循序渐进地加深理解：
+
+1. **打印完整句柄并观察指针差异**：把 `print_ipc_handle` 的字节数从 8 改为 `sizeof(cudaIpcMemHandle_t)` 全量打印；同时对比 `d_producer` 与 `d_consumer` 两个指针值——它们在数值上可能不同，但指向同一块显存，借此理解 IPC 映射的虚拟地址语义。
+2. **拆成真正的双进程程序**：以现有 `producer_kernel` / `consumer_kernel` 为基础，拆分出独立的生产者、消费者两个可执行文件，把 `cudaIpcGetMemHandle` 得到的句柄写入文件或命名管道，由消费者读入后 `cudaIpcOpenMemHandle`，验证跨进程共享（Linux 环境更完整）。
+3. **加入 IPC 事件做严格同步**：在双进程版本中用 `demo_ipc_event` 里的事件机制，让消费者通过 `cudaStreamWaitEvent` 等待生产者的 `producer_kernel` 完成后再启动 `consumer_kernel`，消除竞态，体会跨进程 GPU 端同步。

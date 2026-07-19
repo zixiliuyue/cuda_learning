@@ -75,58 +75,88 @@ func New(l *ledger.Ledger, strategy string) *Scheduler {
 // 注意事项：
 //   - 成功返回时，选中节点的资源已在账本中扣减；调用方若后续下发失败，需调用账本 Release 回滚。
 func (s *Scheduler) Schedule(_ context.Context, task *domain.Task, nodes []*domain.Node) (*Decision, error) {
-	type candidate struct {
-		nodeID string
-		gpus   []string
-		mode   domain.ShareMode
-		score  float64
-	}
-	var candidates []candidate
-
+	// Filter + Score：只读判断可行性并按剩余显存打分，不修改账本。
+	// 由于同一任务对各候选节点的资源需求相同，用"当前剩余显存"打分与
+	// 用"分配后剩余显存"打分的排序完全一致，故可只读打分。
+	bestNode := ""
+	bestScore := 0.0
+	found := false
 	for _, n := range nodes {
 		if n.Status != domain.NodeOnline {
 			continue
 		}
-		// Filter + 试分配：账本原子扣减。
-		alloc, err := s.ledger.TryAllocate(n.ID, task.Resource)
-		if err != nil {
+		if !s.ledger.CanAllocate(n.ID, task.Resource) {
 			continue // 该节点资源不足，跳过
 		}
-		// Score：基于分配后节点剩余显存打分。
-		free := s.ledger.NodeFreeMemory(n.ID)
-		candidates = append(candidates, candidate{
-			nodeID: n.ID,
-			gpus:   alloc.AllocatedIDs(),
-			mode:   alloc.ShareMode,
-			score:  s.score(free),
-		})
+		score := s.score(s.ledger.NodeFreeMemory(n.ID))
+		if !found || score > bestScore {
+			found = true
+			bestScore = score
+			bestNode = n.ID
+		}
 	}
 
-	if len(candidates) == 0 {
+	if !found {
 		return nil, apperr.Exhausted("没有满足任务资源需求的可用节点")
 	}
 
-	// 选出最高分候选。
-	best := 0
-	for i := 1; i < len(candidates); i++ {
-		if candidates[i].score > candidates[best].score {
-			best = i
-		}
-	}
-
-	// 回滚未被选中的候选，释放其试分配的资源。
-	for i, c := range candidates {
-		if i == best {
-			continue
-		}
-		s.ledger.Release(c.gpus, task.Resource.MemoryMB)
+	// 仅对选中的最优节点做一次真实扣减，避免多次写+回滚。
+	alloc, err := s.ledger.TryAllocate(bestNode, task.Resource)
+	if err != nil {
+		// 打分与扣减之间资源可能被并发占用，视为本轮无可用节点。
+		return nil, apperr.Exhausted("选中节点资源已被占用，稍后重试")
 	}
 
 	return &Decision{
-		NodeID:        candidates[best].nodeID,
-		AllocatedGPUs: candidates[best].gpus,
-		ShareMode:     candidates[best].mode,
+		NodeID:        bestNode,
+		AllocatedGPUs: alloc.AllocatedIDs(),
+		ShareMode:     alloc.ShareMode,
 	}, nil
+}
+
+// RebuildLedger 以存储层为真相源重建资源账本。
+//
+// 调度器进程重启或周期性巡检时调用：先清空账本，再登记全部节点的 GPU 容量，
+// 最后重放全部活动任务（scheduled/running）此前分配到的资源占用。这样可避免
+// "进程重启即认为所有卡空闲"造成的超卖，并让运行期新增/变更的节点进入账本。
+//
+// 参数：
+//   - nodes:       当前全部节点（含 GPU 容量）。
+//   - activeTasks: 当前处于活动态、仍占用资源的任务。
+func (s *Scheduler) RebuildLedger(nodes []*domain.Node, activeTasks []*domain.Task) {
+	s.ledger.Reset()
+	for _, n := range nodes {
+		s.ledger.SyncNode(n)
+	}
+	for _, t := range activeTasks {
+		if len(t.AllocatedGPUs) == 0 {
+			continue
+		}
+		s.ledger.Occupy(t.AllocatedGPUs, t.Resource.MemoryMB, t.Resource.EffectiveShareMode())
+	}
+}
+
+// LoadLedgerSnapshot 从共享存储的 JSON 快照恢复账本状态。
+//
+// 用于多调度器实例共享同一份占用视图：本实例成为 leader 后先加载最新快照，
+// 再在其上做调度决策，决策完成后调用 DumpLedgerSnapshot 写回，实现跨实例一致。
+func (s *Scheduler) LoadLedgerSnapshot(data []byte) error {
+	return s.ledger.LoadSnapshot(data)
+}
+
+// DumpLedgerSnapshot 将当前账本状态序列化为 JSON 快照，供写回共享存储。
+func (s *Scheduler) DumpLedgerSnapshot() ([]byte, error) {
+	return s.ledger.MarshalSnapshot()
+}
+
+// SyncNodes 将全部节点的 GPU 容量登记进账本（保留既有占用）。
+//
+// 与 RebuildLedger 不同，SyncNodes 不清空占用，仅登记/刷新容量，用于在
+// 已加载共享快照的基础上纳入运行期新增或变更的节点。
+func (s *Scheduler) SyncNodes(nodes []*domain.Node) {
+	for _, n := range nodes {
+		s.ledger.SyncNode(n)
+	}
 }
 
 // ReleaseTask 归还一个任务已占用的资源到账本。
@@ -142,6 +172,13 @@ func (s *Scheduler) ReleaseTask(allocatedIDs []string, memoryMB int64) {
 		return
 	}
 	s.ledger.Release(allocatedIDs, memoryMB)
+}
+
+// CanFit 只读地判断某节点当前是否能容纳指定资源需求（不修改账本）。
+//
+// 供抢占逻辑在归还资源后判断"是否已腾出足够资源"，避免盲抢。
+func (s *Scheduler) CanFit(nodeID string, req domain.ResourceRequest) bool {
+	return s.ledger.CanAllocate(nodeID, req)
 }
 
 // score 根据策略将节点剩余显存转换为分值。
@@ -193,8 +230,11 @@ func (s *Scheduler) ScheduleGang(ctx context.Context, task *domain.Task, nodes [
 	}
 
 	decisions := make([]*Decision, 0, size)
+	usedNodes := make(map[string]int) // 记录各节点已承载的份数，用于拓扑分散
 	for i := 0; i < size; i++ {
-		d, err := s.Schedule(ctx, task, nodes)
+		// 拓扑感知：优先把每一份分散到尚未使用的节点，降低单点故障对分布式
+		// 训练的影响；仅当无空闲新节点可用时，才回退到已承载份数的节点。
+		d, err := s.scheduleGangMember(ctx, task, nodes, usedNodes)
 		if err != nil {
 			// 有一份分不到：回滚已成功的份，保证 All-or-Nothing。
 			for _, done := range decisions {
@@ -202,7 +242,29 @@ func (s *Scheduler) ScheduleGang(ctx context.Context, task *domain.Task, nodes [
 			}
 			return nil, apperr.Exhausted("Gang 调度失败：无法一次性满足全部份数")
 		}
+		usedNodes[d.NodeID]++
 		decisions = append(decisions, d)
 	}
 	return decisions, nil
+}
+
+// scheduleGangMember 为成组任务的单份选节点，优先分散到未使用的节点。
+//
+// 先在"尚未被本组占用的节点"集合中调度以实现拓扑分散；若该集合无可用节点，
+// 再回退到全部节点，保证在小集群/单节点场景下仍能凑齐份数。
+func (s *Scheduler) scheduleGangMember(ctx context.Context, task *domain.Task, nodes []*domain.Node, usedNodes map[string]int) (*Decision, error) {
+	if len(usedNodes) > 0 {
+		fresh := make([]*domain.Node, 0, len(nodes))
+		for _, n := range nodes {
+			if _, ok := usedNodes[n.ID]; !ok {
+				fresh = append(fresh, n)
+			}
+		}
+		if len(fresh) > 0 {
+			if d, err := s.Schedule(ctx, task, fresh); err == nil {
+				return d, nil
+			}
+		}
+	}
+	return s.Schedule(ctx, task, nodes)
 }

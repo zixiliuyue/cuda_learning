@@ -13,12 +13,15 @@ import (
 type Cache interface {
 	// Set 写入键值，ttl 为 0 表示永不过期。
 	Set(ctx context.Context, key, value string, ttl time.Duration) error
-	// Get 读取键值，不存在时返回 (\"\", false, nil)。
+	// Get 读取键值，不存在时返回 ("", false, nil)。
 	Get(ctx context.Context, key string) (string, bool, error)
 	// Del 删除键。
 	Del(ctx context.Context, key string) error
 	// Keys 返回匹配前缀的所有键。
 	Keys(ctx context.Context, prefix string) ([]string, error)
+	// SetCAS 原子 Compare-And-Swap：仅当 key 的当前值等于 oldVal 时写入 newVal。
+	// 返回是否成功写入（不匹配或不存在均返回 false）。
+	SetCAS(ctx context.Context, key, oldVal, newVal string, ttl time.Duration) (bool, error)
 }
 
 // PriorityQueue 定义带优先级的待调度任务队列能力。

@@ -2,21 +2,17 @@
 // 主框架：左侧菜单 + 顶部栏 + 内容区。
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useAuthStore } from '../store/auth'
 
 const router = useRouter()
 const route = useRoute()
+const auth = useAuthStore()
 
 // 当前选中的菜单项（取路由末段）。
 const selectedKey = computed(() => [route.path.split('/').pop() || 'dashboard'])
 
 // 当前登录用户名。
-const username = computed(() => {
-  try {
-    return JSON.parse(localStorage.getItem('qt_user') || '{}').username || '用户'
-  } catch {
-    return '用户'
-  }
-})
+const username = computed(() => auth.username)
 
 // 菜单点击跳转。
 function onMenuClick(key) {
@@ -25,8 +21,7 @@ function onMenuClick(key) {
 
 // 退出登录。
 function logout() {
-  localStorage.removeItem('qt_token')
-  localStorage.removeItem('qt_user')
+  auth.clear()
   router.push('/login')
 }
 </script>

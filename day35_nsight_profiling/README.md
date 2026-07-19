@@ -142,3 +142,22 @@ REM 打开 timeline.nsys-rep 用 Nsight Systems GUI 查看
 2. memory-bound 不要盲目减少计算；compute-bound 不要盲目优化访存
 3. 占用率是手段而非目的，最终以实测吞吐 / 耗时为准
 4. `-lineinfo` 编译选项可让 ncu 将指标映射回具体源码行
+
+---
+
+## 验收标准
+
+完成本天学习后，运行 `nsight_profiling.exe`，你应当能够观察到并解释以下现象，才算真正掌握：
+
+1. **理论上限被正确打印**：程序开头输出「理论显存带宽 (GB/s)」与「理论计算吞吐(FP32) (GFLOPS)」，最后的 Roofline 提示给出「拐点强度 = 理论算力 / 理论带宽」的具体 FLOP/Byte 值，你应能据此判断某个算术强度落在带宽区还是计算区。
+2. **两类 Kernel 的利用率呈现互补特征**：内存受限 Kernel 的「带宽利用率」应远高于其计算利用率、接近理论带宽；计算受限 Kernel 的「计算利用率」应远高于其带宽占用——这正是 memory-bound 与 compute-bound 的直接证据。
+3. **占用率分析表数值合理**：占用率表中四个 Kernel 的「活跃 Warp / 占用率」被打印出来，其中「低占用率」Kernel 的占用率应明显低于「高占用率」Kernel，验证了寄存器用量对并行度的影响。
+4. **能用 Nsight 交叉验证**：运行 `ncu --set full .\build\nsight_profiling.exe` 后，ncu 报告中 `kernel_memory_bound` 的 Memory Throughput 高、`kernel_compute_bound` 的 Compute (SM) Throughput 高、`kernel_low_occupancy` 的 Achieved Occupancy 偏低，与程序自算结果一致，说明你能把两者对上号。
+
+## 动手挑战
+
+以下任务基于本天 `src/main.cu` 的真实实现，循序渐进地加深理解：
+
+1. **改变算术强度观察瓶颈迁移**：把 `COMPUTE_ITERS`（当前 512）逐步调小到几十，重新运行，观察 `kernel_compute_bound` 的实测 GFLOPS 与计算利用率如何下降、逐渐向 memory-bound 靠拢，亲手验证 Roofline 的拐点效应。
+2. **用 -lineinfo + ncu 定位热点行**：在编译命令中加入 `-lineinfo`，用 `ncu -k kernel_low_occupancy --set full .\build\nsight_profiling.exe` 采集，查看报告里的 Registers Per Thread 与 “Occupancy Limited by Registers” 提示，把占用率瓶颈定位到 `kernel_low_occupancy` 里那组独立累加器。
+3. **调 Block 大小做占用率扫描**：把 `BLOCK_SIZE` 依次改为 128 / 256 / 512，对每种配置调用 `analyze_occupancy` 打印理论占用率并实测四个 Kernel 耗时，画出占用率与耗时的关系，体会“占用率并非越高越好”。

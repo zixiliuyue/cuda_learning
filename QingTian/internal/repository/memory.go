@@ -224,6 +224,28 @@ func (r *MemoryTaskRepo) ListByOwner(_ context.Context, owner string) ([]*domain
 	return out, nil
 }
 
+// CountActive 实现 TaskRepository.CountActive。
+func (r *MemoryTaskRepo) CountActive(_ context.Context, owner, projectID string) (int, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	n := 0
+	for _, t := range r.tasks {
+		if t.Status != domain.TaskScheduled && t.Status != domain.TaskRunning {
+			continue
+		}
+		if projectID != "" {
+			if t.ProjectID == projectID {
+				n++
+			}
+			continue
+		}
+		if t.Owner == owner {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // MemoryUsageRepo 是 UsageRepository 的内存实现。
 type MemoryUsageRepo struct {
 	mu      sync.RWMutex

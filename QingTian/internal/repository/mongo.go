@@ -238,6 +238,23 @@ func (r *MongoTaskRepo) ListByOwner(ctx context.Context, owner string) ([]*domai
 	return out, nil
 }
 
+// CountActive 实现 TaskRepository.CountActive，将过滤条件下推到 MongoDB 统计。
+func (r *MongoTaskRepo) CountActive(ctx context.Context, owner, projectID string) (int, error) {
+	filter := bson.M{
+		"status": bson.M{"$in": bson.A{domain.TaskScheduled, domain.TaskRunning}},
+	}
+	if projectID != "" {
+		filter["project_id"] = projectID
+	} else {
+		filter["owner"] = owner
+	}
+	n, err := r.col.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
 // MongoUsageRepo 是 UsageRepository 的 MongoDB 实现。
 type MongoUsageRepo struct{ col *mongo.Collection }
 

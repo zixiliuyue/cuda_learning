@@ -133,3 +133,22 @@ A: 传统（legacy）API 从 CUDA 11 起逐步弃用，Generic API 更通用且�
 
 - [cuSPARSE Library Documentation](https://docs.nvidia.com/cuda/cusparse/index.html)
 - [cuSPARSE Generic API — SpMV](https://docs.nvidia.com/cuda/cusparse/index.html#cusparse-generic-function-spmv)
+
+---
+
+## 验收标准
+
+完成本天学习后，运行 `cusparse_spmv.exe`，你应当能够观察到并解释以下现象，才算真正掌握：
+
+1. **三种稀疏度都成功打印 nnz 与实际密度**：测试 1 中依次输出稀疏度 90% / 95% / 99% 对应的 `非零元素 nnz` 与 `实际密度`，且密度随稀疏度升高而下降（约 10% → 5% → 1%），说明 CSR 矩阵按预期生成。
+2. **稀疏 SpMV 明显快于稠密 Kernel**：性能总结表格中三行 `CSR SpMV` 的耗时均应小于 `稠密矩阵-向量乘法` 的耗时，且底部的「稀疏(99%) 相对稠密加速比」应大于 1，验证跳过 0 元素带来的收益。
+3. **稀疏度越高越快的趋势成立**：对比三个稀疏度的 SpMV 耗时，通常 99% 稀疏度快于 90%（因为 nnz 更少），能据此说明 SpMV 的耗时主要由非零元素数量决定，而非矩阵维度。
+4. **程序无 cuSPARSE 错误退出**：全程无 `[cuSPARSE 错误]` 输出，最终打印 `[主机] 程序正常退出。`，说明 Generic API 调用流程（Create/bufferSize/SpMV/Destroy）完整正确。
+
+## 动手挑战
+
+以下任务基于本天 `src/main.cu` 的真实实现，循序渐进地加深理解：
+
+1. **量化显存节省**：在 `run_sparse_spmv` 中统计 CSR 三数组的字节数（`nnz*sizeof(float) + nnz*sizeof(int) + (n+1)*sizeof(int)`），并与稠密矩阵的 `n*n*sizeof(float)`（程序已打印为 64 MB）对比打印，直观看到每种稀疏度下的显存节省倍数。
+2. **切换到双精度**：把矩阵与向量的值类型从 `CUDA_R_32F` 改为 `CUDA_R_64F`（同时 `float` 改 `double`、`alpha/beta` 改 `double`），重新运行并对比 SpMV 的耗时与显存占用变化，理解精度与性能的取舍。
+3. **扩展为 SpMM**：新增一路测试，用 `cusparseCreateDnMat` 构造多列的稠密矩阵 B，改用 `cusparseSpMM` 计算 `C = A*B`，将本例的「稀疏矩阵×向量」推广为「稀疏矩阵×稠密矩阵」，体会一次处理多个右端项的批量场景。

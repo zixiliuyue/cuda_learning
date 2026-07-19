@@ -133,3 +133,22 @@ print(cuda.device_name())
 4. C++ 抛异常 → 自动转 Python `RuntimeError`，比 `exit()` 更安全
 5. `FetchContent`：CMake 自动拉取 pybind11，用户零配置
 6. 编译产物 `.pyd` / `.so` 就是普通 Python 模块，可 `pip install` 或直接 `import`
+
+---
+
+## 验收标准
+
+完成本天学习后，运行 `python python/demo.py`，你应当能够观察到并解释以下现象，才算真正掌握：
+
+1. **扩展模块可被 import**：编译后 `build/` 目录出现 `cuda_pybind.cp3XX-win_amd64.pyd`（Linux 为 `.so`），`import cuda_pybind` 不报错，且 `cuda_pybind.__version__` 为 `1.0.0`、`cuda_pybind.device_name()` 打印出你的 GPU 名称。
+2. **向量加法结果与 NumPy 一致**：`cuda.vector_add(a, b)` 返回的 NumPy 数组与 `a + b` 逐元素相等（误差为 0 或接近机器精度），证明 `py::array_t` 指针取用与 H2D/D2H 拷贝正确。
+3. **矩阵乘法与 NumPy 交叉验证通过**：`cuda.matmul(A, B, w).reshape(w, w)` 与 `A.reshape(w,w) @ B.reshape(w,w)` 的最大误差在浮点容差内（float32 累加通常约 1e-3 量级），说明 Tiled + 共享内存的 `matmul_kernel` 计算正确。
+4. **错误能被 Python 捕获而非崩溃**：故意传入长度不一致的两个向量时，得到的是 Python `RuntimeError`（可被 `try/except` 捕获），而不是解释器直接退出——验证了 C++ 抛异常自动转 Python 异常的机制。
+
+## 动手挑战
+
+以下任务基于本天 `src/main.cu` 的真实实现，循序渐进地加深理解：
+
+1. **触发并捕获输入校验异常**：在 Python 里分别传入二维数组给 `vector_add`、以及元素数不等于 `width*width` 的数组给 `matmul`，用 `try/except RuntimeError` 捕获并打印 C++ 端抛出的 `[输入错误]` 消息，理解校验分支的价值。
+2. **新增一个导出函数**：仿照 `vector_add`，实现并用 `m.def` 导出一个 `vector_scale(a, s)`（`c[i] = a[i] * s`）的 Kernel 与包装函数，重新编译后在 Python 里调用验证，走通「加 Kernel → 加包装 → 加绑定 → 重编译 → import」的完整链路。
+3. **量化封装开销**：在 Python 端用 `time.perf_counter` 分别测量 `cuda.matmul` 与纯 NumPy `@` 的耗时，对比不同 `width`（如 256/512/1024）下的差异，思考 H2D/D2H 拷贝在总耗时中的占比与 GPU 加速的收益临界点。

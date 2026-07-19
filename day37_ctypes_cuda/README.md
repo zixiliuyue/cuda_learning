@@ -206,3 +206,22 @@ print("返回码:", ret, "最大误差:", np.max(np.abs(out - (a + b))))
 - [Python ctypes 官方文档](https://docs.python.org/zh-cn/3/library/ctypes.html)
 - [NumPy ctypeslib.ndpointer](https://numpy.org/doc/stable/reference/routines.ctypeslib.html)
 - [Creating Shared Libraries with nvcc](https://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/index.html)
+
+---
+
+## 验收标准
+
+完成本天学习后，运行 `python python/demo.py`，你应当能够观察到并解释以下现象，才算真正掌握：
+
+1. **动态库被成功加载**：`demo.py` 打印 `[加载] 找到动态库: ...cuda_ctypes.dll`（Linux 为 `libcuda_ctypes.so`），说明 `extern "C"` + `EXPORT_API` 导出的符号能被 ctypes 通过原始函数名定位。
+2. **设备信息查询返回 0**：演示 1 中 `get_device_info` 返回码为 0，且缓冲区被填入形如 `设备名称=... | 计算能力=... | 显存=... | SM数=... | Warp大小=32` 的字符串，验证「调用方分配缓冲、库负责填充」的 ABI 模式。
+3. **两个计算函数结果通过校验**：演示 2 向量加法「最大误差 0.00e+00 -> 通过」，演示 3 矩阵乘法在浮点容差内「-> 通过」，且两者调用返回码均为 0，说明 H2D→Kernel→D2H 的完整流程与内存管理正确。
+4. **性能总结表完整打印**：结尾表格同时列出向量加法、矩阵乘法的 GPU(ms) / CPU(ms) / 结果，程序无段错误退出——间接验证了 Python 端 `argtypes/restype` 声明正确（否则 64 位指针会被截断崩溃）。
+
+## 动手挑战
+
+以下任务基于本天 `src/main.cu` 的真实实现，循序渐进地加深理解：
+
+1. **复现指针截断崩溃**：在 Python 里注释掉 `lib.vector_add_cuda.argtypes = [...]` 声明后再调用，观察在 64 位系统上因指针被当作 32 位 int 传递而导致的错误或段错误，从而深刻理解为什么 ctypes 必须显式声明 `argtypes/restype`。
+2. **触发库内错误码路径**：给 `vector_add_cuda` 传入 `n<=0` 或用 `ctypes` 传入空指针，确认库打印 `[参数错误]` 并返回 `-1`，验证「返回错误码而非 exit()」的设计不会杀死 Python 解释器。
+3. **新增一个导出函数**：仿照 `vector_add_cuda`，在 `extern "C"` 块内实现并用 `EXPORT_API` 导出一个 `vector_scale_cuda(const float* a, float* out, float s, int n)`，重新编译动态库后在 `demo.py` 里声明 `argtypes`（含 `ctypes.c_float`）并调用验证，走通完整的「加 Kernel → 导出 → 重编译 → ctypes 调用」链路。

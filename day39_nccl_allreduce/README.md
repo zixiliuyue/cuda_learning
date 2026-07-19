@@ -172,3 +172,22 @@ torchrun --nproc_per_node=4 nccl_demo.py
 - **只有 1 个 GPU 也能运行吗？** 可以。单 GPU 的 AllReduce 结果就是它自身的数据，程序仍会完整演示 API 流程。
 - **为什么 NCCL 比“拷回 CPU 求和”快很多？** 后者数据要经 PCIe 往返主机、串行累加；NCCL 直接在 GPU 间用 NVLink/PCIe 做拓扑感知的并行规约，避免了 CPU 瓶颈。
 - **想看 NCCL 内部选了哪种算法？** 运行前设置 `NCCL_DEBUG=INFO`，日志会打印 Ring/Tree 通道与拓扑信息。
+
+---
+
+## 验收标准
+
+完成本天学习后，运行 `nccl_demo`（或 Windows 的 `nccl_demo.exe`），你应当能够观察到并解释以下现象，才算真正掌握：
+
+1. **程序打印编译路径与设备数**：开头输出 `[系统] 检测到 N 个 CUDA 设备` 与 `[编译] HAS_NCCL = 0/1`，你能据此判断当前是走真实 NCCL 路径还是 CPU 模拟路径，理解 `__has_include(<nccl.h>)` 的条件编译降级机制。
+2. **AllReduce 结果一致且等于 1+2+…+K**：无论真实 NCCL 还是 CPU 模拟，每个 GPU 的结果都应相同，且每个元素等于 `1+2+...+num_gpus`（GPU g 初始化为 g+1）；真实路径会打印 `全部 GPU 结果一致，AllReduce 正确！`。
+3. **性能对比表体现 NCCL 优势**（有 NCCL 且多卡时）：表格中 `NCCL AllReduce (GPU)` 的耗时应低于 `拷回 CPU + CPU 求和`，加速比大于 1，验证 NCCL 绕过 CPU、走 GPU 间互联的价值。
+4. **能读懂多进程初始化流程**：程序打印的多进程说明（`ncclGetUniqueId` → 广播 → `ncclCommInitRank`）你能复述，并能说明它与单进程 `ncclCommInitAll` 的区别。
+
+## 动手挑战
+
+以下任务基于本天 `src/main.cu` 的真实实现，循序渐进地加深理解：
+
+1. **改变规约操作与初值**：把 `ncclSum` 改为 `ncclMax` 或 `ncclProd`，并调整每个 GPU 的初始化值，重新推导「AllReduce 后每个元素应等于多少」，再运行验证你的预测（CPU 参考实现 `cpu_allreduce_reference` 也需同步改成对应语义）。
+2. **观察 NCCL 选择的算法**：在 Linux 多卡环境下设置 `NCCL_DEBUG=INFO` 运行，从日志中找出 NCCL 实际选用的是 Ring 还是 Tree，并结合 `nvidia-smi topo -m` 的拓扑输出解释为什么。
+3. **改造为多进程版本**：参考 `print_multiprocess_notes` 的流程，把单进程 `ncclCommInitAll` 版本改写为「每进程 1 GPU」的多进程程序：rank 0 用 `ncclGetUniqueId` 生成 id，经 MPI 或 socket 广播后各进程 `ncclCommInitRank`，再各自调用 `ncclAllReduce`。

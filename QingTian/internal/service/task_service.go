@@ -50,7 +50,15 @@ type TaskService struct {
 	quota    *QuotaService
 	notifier notify.Notifier
 	tracer   *tracing.Tracer
+
+	// ledgerStore 是账本快照的共享存储（如 Redis）。注入后，调度器在 leader
+	// 锁保护下"加载共享快照 -> 调度 -> 写回"，实现多实例共享同一占用视图，
+	// 避免每轮都从 MongoDB 全量重建。未注入时回退到从 MongoDB 重建。
+	ledgerStore cache.Cache
 }
+
+// ledgerSnapshotKey 是账本快照在共享存储中的键。
+const ledgerSnapshotKey = "qingtian:ledger:snapshot"
 
 // NewTaskService 创建任务服务。
 func NewTaskService(
@@ -105,6 +113,12 @@ func (s *TaskService) WithClock(now func() time.Time) *TaskService {
 // WithTracer 注入分布式追踪器，串联提交/调度/执行链路。
 func (s *TaskService) WithTracer(t *tracing.Tracer) *TaskService {
 	s.tracer = t
+	return s
+}
+
+// WithLedgerStore 注入账本快照的共享存储（如 Redis），启用跨实例共享账本。
+func (s *TaskService) WithLedgerStore(c cache.Cache) *TaskService {
+	s.ledgerStore = c
 	return s
 }
 
@@ -197,21 +211,94 @@ func (s *TaskService) Submit(ctx context.Context, owner string, req SubmitReques
 }
 
 // countRunning 统计某主体当前处于运行中的任务数，用于并发配额校验。
+//
+// 通过仓储的 CountActive 将过滤下推到存储层，避免全量拉取任务后在内存过滤。
 func (s *TaskService) countRunning(ctx context.Context, owner, projectID string) int {
-	tasks, err := s.repo.ListByOwner(ctx, owner)
+	n, err := s.repo.CountActive(ctx, owner, projectID)
 	if err != nil {
 		return 0
 	}
-	n := 0
-	for _, t := range tasks {
-		if projectID != "" && t.ProjectID != projectID {
-			continue
-		}
-		if t.Status == domain.TaskRunning || t.Status == domain.TaskScheduled {
-			n++
-		}
-	}
 	return n
+}
+
+// RebuildLedger 以存储层为真相源重建资源账本。
+//
+// 调度器进程重启后账本为空，若直接调度会因"认为所有卡空闲"而超卖；同时运行期
+// 新注册/变更的节点也需要进入账本。该方法在每轮调度前调用：加载全部节点与全部
+// 活动任务（scheduled/running），交由调度器 Reset -> SyncNode -> Occupy 重建账本。
+//
+// 参数：
+//   - ctx: 上下文。
+//
+// 返回值：
+//   - error: 读取节点或任务失败时返回。
+func (s *TaskService) RebuildLedger(ctx context.Context) error {
+	nodes, err := s.nodeRepo.List(ctx)
+	if err != nil {
+		return err
+	}
+	scheduled, err := s.repo.List(ctx, domain.TaskScheduled)
+	if err != nil {
+		return err
+	}
+	running, err := s.repo.List(ctx, domain.TaskRunning)
+	if err != nil {
+		return err
+	}
+	active := make([]*domain.Task, 0, len(scheduled)+len(running))
+	active = append(active, scheduled...)
+	active = append(active, running...)
+	s.sched.RebuildLedger(nodes, active)
+	return nil
+}
+
+// SyncLedger 在每轮调度前准备账本，是账本一致性的入口。
+//
+// 注入了共享存储（ledgerStore）时走"共享快照"路径：加载 Redis 中的账本快照，
+// 再登记全部节点容量（纳入运行期新增/变更节点，保留既有占用）；共享存储中
+// 尚无快照（首次启动）时回退为从 MongoDB 全量重建。未注入共享存储时，
+// 始终从 MongoDB 全量重建，保持既有行为。
+//
+// 该方法应在持有调度 leader 锁期间调用，从而保证"加载->调度->写回"串行化。
+func (s *TaskService) SyncLedger(ctx context.Context) error {
+	if s.ledgerStore == nil {
+		return s.RebuildLedger(ctx)
+	}
+	data, ok, err := s.ledgerStore.Get(ctx, ledgerSnapshotKey)
+	if err != nil {
+		return err
+	}
+	if !ok || data == "" {
+		// 共享存储尚无快照：从 MongoDB 全量重建，并写回作为初始快照。
+		if err := s.RebuildLedger(ctx); err != nil {
+			return err
+		}
+		return s.PersistLedger(ctx)
+	}
+	if err := s.sched.LoadLedgerSnapshot([]byte(data)); err != nil {
+		return err
+	}
+	// 在共享快照之上登记节点容量，纳入运行期新增/变更节点（保留既有占用）。
+	nodes, err := s.nodeRepo.List(ctx)
+	if err != nil {
+		return err
+	}
+	s.sched.SyncNodes(nodes)
+	return nil
+}
+
+// PersistLedger 将当前账本状态写回共享存储，供其它调度器实例复用。
+//
+// 未注入共享存储时为空操作。应在完成本轮调度后、释放 leader 锁前调用。
+func (s *TaskService) PersistLedger(ctx context.Context) error {
+	if s.ledgerStore == nil {
+		return nil
+	}
+	data, err := s.sched.DumpLedgerSnapshot()
+	if err != nil {
+		return err
+	}
+	return s.ledgerStore.Set(ctx, ledgerSnapshotKey, string(data), 0)
 }
 
 // ScheduleOnce 从队列取出一个任务并尝试调度、下发。
@@ -271,9 +358,14 @@ func (s *TaskService) ScheduleOnce(ctx context.Context) (bool, error) {
 	task.NodeID = decision.NodeID
 	task.AllocatedGPUs = decision.AllocatedGPUs
 	if err := task.Transition(domain.TaskScheduled, s.now()); err != nil {
+		// 状态机拒绝转移：回滚账本占用，避免资源泄漏。
+		s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
 		return true, err
 	}
 	if err := s.repo.Update(ctx, task); err != nil {
+		// 落库失败：回滚账本占用并重新入队，等待下次调度。
+		s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
+		_ = s.queue.Push(ctx, taskID, float64(task.Priority))
 		return true, err
 	}
 
@@ -289,60 +381,122 @@ func (s *TaskService) ScheduleOnce(ctx context.Context) (bool, error) {
 		ShareMode:      string(decision.ShareMode),
 		CheckpointPath: task.CheckpointPath,
 	}
-	body, _ := json.Marshal(msg)
+	body, err := json.Marshal(msg)
+	if err != nil {
+		s.rollbackDispatch(ctx, task, decision)
+		return true, apperr.Wrap(apperr.CodeInternal, "下发消息序列化失败", err)
+	}
 	if err := s.producer.Publish(ctx, mq.TaskDispatchTopic(task.NodeID), body); err != nil {
-		return true, err
+		// 下发失败：回滚账本、回退任务状态并重新入队，
+		// 避免出现"已调度但 Agent 收不到"的悬挂任务与资源泄漏。
+		s.rollbackDispatch(ctx, task, decision)
+		return true, nil
 	}
 	return true, nil
+}
+
+// rollbackDispatch 在下发失败时回滚一次调度决策：
+// 归还账本资源、把任务状态回退为 pending 并重新入队等待重试。
+//
+// 参数：
+//   - ctx:      上下文。
+//   - task:     调度失败需回滚的任务（当前应为 scheduled）。
+//   - decision: 本次调度决策，用于归还其占用的资源。
+func (s *TaskService) rollbackDispatch(ctx context.Context, task *domain.Task, decision *scheduler.Decision) {
+	s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
+	now := s.now()
+	task.Status = domain.TaskPending
+	task.NodeID = ""
+	task.AllocatedGPUs = nil
+	task.UpdatedAt = now
+	_ = s.repo.Update(ctx, task)
+	_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
 }
 
 // tryPreempt 尝试抢占低优先级的可抢占任务，为高优先级任务腾出资源。
 //
 // 抢占是提升关键任务响应速度的核心手段：当高优先级任务无节点可调度时，
-// 选出优先级更低且标记为可抢占（Preemptible）的运行/已调度任务，将其终止
-// 并归还资源。为避免误伤，仅抢占严格低于本任务优先级的可抢占任务。
+// 按"目标节点 + 所需资源量"定向选择 victim——只考虑与本任务资源约束匹配的
+// 在线节点，在该节点上逐个终止优先级更低且可抢占的任务并归还资源，直到该
+// 节点能容纳本任务为止。相比"盲抢一个就停"，可避免"杀错节点/杀了还不够"。
 //
 // 参数：
 //   - ctx:   上下文。
 //   - task:  触发抢占的高优先级待调度任务。
-//   - nodes: 当前节点列表（此处未直接使用，保留以便未来按节点定向抢占）。
+//   - nodes: 当前节点列表，用于按节点定向抢占。
 //
 // 返回值：
-//   - bool: 是否成功抢占了至少一个任务（成功后调用方可重试调度）。
-func (s *TaskService) tryPreempt(ctx context.Context, task *domain.Task, _ []*domain.Node) bool {
+//   - bool: 是否成功腾出了足以容纳本任务的资源（成功后调用方可重试调度）。
+func (s *TaskService) tryPreempt(ctx context.Context, task *domain.Task, nodes []*domain.Node) bool {
 	all, err := s.repo.List(ctx, "")
 	if err != nil {
 		return false
 	}
-	// 收集候选：可抢占、活动中、且优先级严格低于本任务的任务。
-	var victims []*domain.Task
+	// 按节点归集候选 victim：可抢占、活动中、且优先级严格低于本任务。
+	victimsByNode := make(map[string][]*domain.Task)
 	for _, t := range all {
 		if t.ID == task.ID || !t.Preemptible || !t.IsActive() {
 			continue
 		}
-		if t.Priority >= task.Priority {
+		if t.Priority >= task.Priority || t.NodeID == "" {
 			continue
 		}
-		victims = append(victims, t)
+		victimsByNode[t.NodeID] = append(victimsByNode[t.NodeID], t)
 	}
-	if len(victims) == 0 {
+	if len(victimsByNode) == 0 {
 		return false
 	}
-	// 优先抢占优先级最低者，尽量以最小代价腾出资源。
-	sort.Slice(victims, func(i, j int) bool {
-		return victims[i].Priority < victims[j].Priority
-	})
-	preempted := false
-	for _, v := range victims {
-		reason := fmt.Sprintf("被高优先级任务 %s 抢占", task.Name)
-		if err := s.terminateActiveTask(ctx, v, domain.FailurePreempted, reason); err != nil {
+
+	for _, n := range nodes {
+		if n.Status != domain.NodeOnline {
 			continue
 		}
-		preempted = true
-		// 抢占一个通常即可释放足够资源；释放后交由调用方重试调度。
-		break
+		// 型号/厂商等约束不匹配的节点直接跳过，避免徒劳抢占。
+		if !s.nodeMatchesConstraints(n, task.Resource) {
+			continue
+		}
+		victims := victimsByNode[n.ID]
+		if len(victims) == 0 {
+			continue
+		}
+		// 该节点上优先抢占优先级最低者，以最小代价腾出资源。
+		sort.Slice(victims, func(i, j int) bool {
+			return victims[i].Priority < victims[j].Priority
+		})
+		preemptedAny := false
+		for _, v := range victims {
+			reason := fmt.Sprintf("被高优先级任务 %s 抢占", task.Name)
+			if err := s.terminateActiveTask(ctx, v, domain.FailurePreempted, reason); err != nil {
+				continue
+			}
+			preemptedAny = true
+			// 每抢占一个即检查该节点是否已能容纳本任务，达标即停。
+			if s.sched.CanFit(n.ID, task.Resource) {
+				return true
+			}
+		}
+		_ = preemptedAny
 	}
-	return preempted
+	return false
+}
+
+// nodeMatchesConstraints 判断节点的 GPU 是否存在满足任务型号/厂商约束的卡。
+//
+// 仅用于抢占前的粗筛：约束完全不匹配的节点即便腾空也无法承载本任务。
+func (s *TaskService) nodeMatchesConstraints(n *domain.Node, req domain.ResourceRequest) bool {
+	if req.GPUModel == "" && req.Vendor == "" {
+		return true
+	}
+	for _, g := range n.GPUs {
+		if req.GPUModel != "" && g.Model != req.GPUModel {
+			continue
+		}
+		if req.Vendor != "" && g.Vendor != req.Vendor {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // ScheduleBatch 一次性调度队列中至多 maxBatch 个任务（批量调度）。

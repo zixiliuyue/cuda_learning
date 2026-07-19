@@ -90,6 +90,27 @@ func (c *MemoryCache) Keys(_ context.Context, prefix string) ([]string, error) {
 	return out, nil
 }
 
+// SetCAS 实现 Cache.SetCAS，原子 compare-and-swap。
+func (c *MemoryCache) SetCAS(_ context.Context, key, oldVal, newVal string, ttl time.Duration) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.data[key]
+	if !ok || e.expired(c.now()) {
+		return false, nil
+	}
+	if e.value != oldVal {
+		return false, nil
+	}
+	e.value = newVal
+	if ttl > 0 {
+		e.expiresAt = c.now().Add(ttl)
+	} else {
+		e.expiresAt = time.Time{}
+	}
+	c.data[key] = e
+	return true, nil
+}
+
 // pqItem 是优先级队列中的一个元素。
 type pqItem struct {
 	taskID string

@@ -135,6 +135,101 @@ func normalizeVendor(v domain.Vendor) domain.Vendor {
 	return v
 }
 
+// Reset 清空账本的全部占用与登记信息，用于账本重建。
+//
+// 账本是进程内内存态的派生视图，调度器进程重启或周期性巡检时需要以
+// 存储层（MongoDB 中的节点与活动任务）为真相源重建，避免"重启即认为
+// 所有卡空闲"导致的超卖。重建流程为：Reset -> SyncNode 全量节点登记容量
+// -> Occupy 重放全部活动任务的占用。
+func (l *Ledger) Reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.gpus = make(map[string]*gpuAccount)
+	l.nodeGPUs = make(map[string][]string)
+	l.migIndex = make(map[string]*migAccount)
+}
+
+// Occupy 按已知的资源标识重放一次占用（账本重建时使用）。
+//
+// 与 TryAllocate 不同，Occupy 不做择优挑选，而是精确占用调用方给定的
+// 资源标识（任务此前已分配到的 GPU UUID 或 MIG 实例 ID），从而把存储层
+// 中活动任务的占用如实还原到账本，保证重建后账目与真实运行状态一致。
+//
+// 参数：
+//   - ids:      任务已占用的资源标识列表。
+//   - memoryMB: 每块 GPU 上占用的显存（MIG 模式忽略）。
+//   - mode:     该任务的共享模式，用于正确设置独占标记。
+func (l *Ledger) Occupy(ids []string, memoryMB int64, mode domain.ShareMode) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, id := range ids {
+		// 优先按 MIG 实例占用。
+		if m := l.migIndex[id]; m != nil {
+			m.used = true
+			continue
+		}
+		acc := l.gpus[id]
+		if acc == nil {
+			continue
+		}
+		acc.memoryUsed += memoryMB
+		acc.allocated++
+		if mode == domain.ShareExclusive {
+			acc.exclusive = true
+		}
+	}
+}
+
+// CanAllocate 只读地判断某节点是否能满足任务资源需求（不修改账本）。
+//
+// 供调度器 Filter/Score 阶段使用：先只读判断可行性并打分，最终仅对选中的
+// 节点做一次真实扣减，避免"对每个候选节点都试分配再回滚"带来的多次写与
+// 全局锁竞争。
+//
+// 参数：
+//   - nodeID: 目标节点 ID。
+//   - req:    资源需求。
+//
+// 返回值：
+//   - bool: true 表示该节点当前可满足需求。
+func (l *Ledger) CanAllocate(nodeID string, req domain.ResourceRequest) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	uuids, ok := l.nodeGPUs[nodeID]
+	if !ok {
+		return false
+	}
+	if req.EffectiveShareMode() == domain.ShareMIG {
+		fit := 0
+		for _, u := range uuids {
+			acc := l.gpus[u]
+			if acc == nil || !acc.allocatable || !acc.migEnabled {
+				continue
+			}
+			if req.GPUModel != "" && acc.model != req.GPUModel {
+				continue
+			}
+			if req.Vendor != "" && acc.vendor != req.Vendor {
+				continue
+			}
+			for _, m := range acc.migs {
+				if !m.used && m.allocatable && m.memoryMB >= req.MemoryMB {
+					fit++
+				}
+			}
+		}
+		return fit >= req.GPUCount
+	}
+	mode := req.EffectiveShareMode()
+	fit := 0
+	for _, u := range uuids {
+		if l.gpuFits(l.gpus[u], req, mode) {
+			fit++
+		}
+	}
+	return fit >= req.GPUCount
+}
+
 // Candidate 表示某节点上满足需求的候选 GPU 分配方案。
 //
 // 字段：

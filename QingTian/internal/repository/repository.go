@@ -48,6 +48,9 @@ type TaskRepository interface {
 	List(ctx context.Context, status domain.TaskStatus) ([]*domain.Task, error)
 	// ListByOwner 返回指定用户的任务列表。
 	ListByOwner(ctx context.Context, owner string) ([]*domain.Task, error)
+	// CountActive 统计某主体当前处于活动态（scheduled/running）的任务数，用于并发配额校验。
+	// projectID 非空时按项目统计，否则按 owner 统计。
+	CountActive(ctx context.Context, owner, projectID string) (int, error)
 }
 
 // UsageRepository 定义算力用量记录的持久化能力，是成本计量与计费的凭证库。

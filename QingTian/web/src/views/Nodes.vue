@@ -19,7 +19,8 @@ const columns = [
 async function loadNodes() {
   loading.value = true
   try {
-    nodes.value = await nodeApi.list()
+    const data = await nodeApi.list()
+    nodes.value = Array.isArray(data) ? data : []
   } catch {
     nodes.value = []
   } finally {

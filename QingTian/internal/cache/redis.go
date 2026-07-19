@@ -69,6 +69,26 @@ func (r *RedisCache) Get(ctx context.Context, key string) (string, bool, error) 
 	return v, true, nil
 }
 
+// SetCAS 实现 Cache.SetCAS，通过 Lua 脚本原子执行比较并替换。
+// 仅当 key 当前值等于 oldVal 时，才将其设置为 newVal 并设置过期时间 ttl。
+func (r *RedisCache) SetCAS(ctx context.Context, key, oldVal, newVal string, ttl time.Duration) (bool, error) {
+	// Lua 脚本保证原子性：比较当前值，匹配则设置新值+TTL，不匹配则返回失败
+	script := redis.NewScript(`
+		local current = redis.call("GET", KEYS[1])
+		if current == ARGV[1] then
+			redis.call("SET", KEYS[1], ARGV[2], "PX", ARGV[3])
+			return 1
+		end
+		return 0
+	`)
+	// PX 单位为毫秒，将 ttl 转换为毫秒传入
+	res, err := script.Run(ctx, r.client, []string{key}, oldVal, newVal, ttl.Milliseconds()).Result()
+	if err != nil {
+		return false, err
+	}
+	return res.(int64) == 1, nil
+}
+
 // Del 实现 Cache.Del。
 func (r *RedisCache) Del(ctx context.Context, key string) error {
 	return r.client.Del(ctx, key).Err()

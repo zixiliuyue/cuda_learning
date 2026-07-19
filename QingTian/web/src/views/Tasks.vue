@@ -1,11 +1,12 @@
 <script setup>
 // 任务管理页：展示任务列表、支持提交新任务与取消任务。
 import { ref, onMounted, reactive } from 'vue'
-import { Message } from '@arco-design/web-vue'
+import { Message, Modal } from '@arco-design/web-vue'
 import { taskApi } from '../api'
 
 const tasks = ref([])
 const loading = ref(false)
+const submitting = ref(false)
 const modalVisible = ref(false)
 
 // 新任务表单。
@@ -58,12 +59,13 @@ function openModal() {
   modalVisible.value = true
 }
 
-// 提交任务。
+// 提交任务。返回 false 可阻止弹窗在校验失败/请求出错时关闭。
 async function submitTask() {
   if (!form.name || !form.image) {
     Message.warning('请填写任务名称与镜像')
-    return
+    return false
   }
+  submitting.value = true
   try {
     await taskApi.submit({
       name: form.name,
@@ -81,20 +83,31 @@ async function submitTask() {
     Message.success('任务提交成功')
     modalVisible.value = false
     loadTasks()
+    return true
   } catch {
-    // 错误已由拦截器提示。
+    // 错误已由拦截器提示，保持弹窗打开以便重试。
+    return false
+  } finally {
+    submitting.value = false
   }
 }
 
-// 取消任务。
-async function cancelTask(id) {
-  try {
-    await taskApi.cancel(id)
-    Message.success('已取消')
-    loadTasks()
-  } catch {
-    // 已提示。
-  }
+// 取消任务，先二次确认避免误操作。
+function cancelTask(id) {
+  Modal.warning({
+    title: '取消任务',
+    content: '确定要取消该任务吗？此操作不可撤销。',
+    hideCancel: false,
+    onOk: async () => {
+      try {
+        await taskApi.cancel(id)
+        Message.success('已取消')
+        loadTasks()
+      } catch {
+        // 已提示。
+      }
+    }
+  })
 }
 
 onMounted(loadTasks)
@@ -123,7 +136,15 @@ onMounted(loadTasks)
       </template>
     </a-table>
 
-    <a-modal v-model:visible="modalVisible" title="提交算力任务" @ok="submitTask" ok-text="提交" cancel-text="取消">
+    <a-modal
+      v-model:visible="modalVisible"
+      title="提交算力任务"
+      :on-before-ok="submitTask"
+      :confirm-loading="submitting"
+      :mask-closable="false"
+      ok-text="提交"
+      cancel-text="取消"
+    >
       <a-form :model="form" layout="vertical">
         <a-form-item label="任务名称" required>
           <a-input v-model="form.name" placeholder="例如 resnet-train" />

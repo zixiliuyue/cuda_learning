@@ -127,3 +127,22 @@ A: 可能原因：
 
 - [NVIDIA CUDA C++ Programming Guide — Program Structure](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#program-structure)
 - [CUDA Execution Model](https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#execution-model)
+
+---
+
+## 验收标准
+
+达到以下几点，说明你已掌握本天内容：
+
+1. 程序成功编译运行，先打印出「平台信息」和「CUDA 设备信息摘要」（包含设备名称、计算能力等），说明 GPU 环境配置正确。
+2. Kernel 以 `<<< 4, 8 >>>` 启动，屏幕上出现 **32 行** `[GPU线程] 全局ID=xx | Block=xx | Thread=xx | 你好，CUDA!` 输出，即 4 个 Block × 8 个 Thread。
+3. 能解释为什么这 32 行的打印顺序每次运行可能不同（线程并行、`printf` 输出顺序不确定），并理解 `全局ID = blockIdx.x * blockDim.x + threadIdx.x` 的计算。
+4. 理解若删除 `cudaDeviceSynchronize()`，主机端可能看不到完整的 Kernel 输出。
+
+## 动手挑战
+
+基于 [main.cu](src/main.cu) 中的 `hello_cuda_kernel` 循序渐进地练习：
+
+1. **改变线程规模**：修改 `num_blocks` 和 `threads_per_block`（例如 2×16、8×4），重新运行，验证输出总行数始终等于两者乘积，并观察全局 ID 的连续性。
+2. **升级到二维 Grid**：将 `grid_dim` 改为 `dim3 grid_dim(2, 2)`，在 Kernel 中新增打印 `blockIdx.y`，观察二维 Block 索引的变化，理解 `gridDim.y` 的含义。
+3. **增加线程计算**：让每个线程在打印前计算并输出 `全局ID 的平方` 或所属 Warp 编号（`global_tid / 32`），体会「每个线程独立执行同一份代码」的 SIMT 模型。
