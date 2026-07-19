@@ -16,6 +16,40 @@ const (
 	TopicTaskLog = "task_log"
 )
 
+// TaskControlTopic 返回指定节点的任务控制主题。
+//
+// 控制面通过该主题向目标节点 Agent 下达对运行中任务的控制指令
+// （如超时终止、抢占终止），使"控制面决策 -> 数据面执行终止"闭环。
+//
+// 参数：
+//   - nodeID: 目标节点 ID。
+//
+// 返回值：
+//   - 形如 "task_control_<nodeID>" 的主题名。
+func TaskControlTopic(nodeID string) string {
+	return "task_control_" + nodeID
+}
+
+// 任务控制指令动作常量。
+const (
+	// ControlKill 表示要求 Agent 立即终止指定任务的运行进程。
+	ControlKill = "kill"
+)
+
+// ControlMessage 是任务控制指令消息体，由控制面发送给 Agent。
+//
+// 字段：
+//   - TaskID: 目标任务 ID。
+//   - NodeID: 目标节点 ID。
+//   - Action: 控制动作（见 Control* 常量）。
+//   - Reason: 触发原因，便于 Agent 侧日志与审计。
+type ControlMessage struct {
+	TaskID string `json:"task_id"`
+	NodeID string `json:"node_id"`
+	Action string `json:"action"`
+	Reason string `json:"reason"`
+}
+
 // TaskDispatchTopic 返回指定节点的任务下发主题。
 //
 // 每个节点使用独立主题，确保任务只投递给目标节点的 Agent。

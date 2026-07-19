@@ -129,6 +129,21 @@ func (s *Scheduler) Schedule(_ context.Context, task *domain.Task, nodes []*doma
 	}, nil
 }
 
+// ReleaseTask 归还一个任务已占用的资源到账本。
+//
+// 该方法在任务被超时终止、抢占或异常清理时调用，把此前 Schedule/ScheduleGang
+// 扣减的显存与实例占用释放回账本，避免"任务已死、资源仍被占用"的泄漏。
+//
+// 参数：
+//   - allocatedIDs: 任务分配到的资源标识（GPU UUID 或 MIG 实例 ID）。
+//   - memoryMB:     每块 GPU 上占用的显存（应与分配时一致）。
+func (s *Scheduler) ReleaseTask(allocatedIDs []string, memoryMB int64) {
+	if len(allocatedIDs) == 0 {
+		return
+	}
+	s.ledger.Release(allocatedIDs, memoryMB)
+}
+
 // score 根据策略将节点剩余显存转换为分值。
 //
 // 参数：

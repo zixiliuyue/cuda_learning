@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"os"
 	"os/signal"
@@ -45,10 +46,6 @@ func main() {
 	// 组装 Agent 依赖。
 	// 采集器：无 NVML 环境使用模拟采集器（对应 RTX 5060 Ti 16G）。
 	collector := agent.DefaultMockCollector()
-	// 执行器：本地命令执行。
-	executor := agent.NewCommandExecutor(cfg.Agent.WorkDir)
-	// 控制面客户端：HTTP。
-	cp := agent.NewHTTPControlPlane(cfg.Agent.ControlPlaneURL)
 	// 消息队列：NSQ 生产者与消费者。
 	producer, err := mq.NewNSQProducer(cfg.NSQ)
 	if err != nil {
@@ -58,6 +55,14 @@ func main() {
 	defer producer.Close()
 	consumer := mq.NewNSQConsumer(cfg.NSQ)
 	defer consumer.Close()
+	// 执行器：流式命令执行，逐行把日志经 NSQ 回传控制面，支撑实时日志流。
+	logSink := func(taskID, line string) {
+		body, _ := json.Marshal(mq.LogMessage{TaskID: taskID, Line: line})
+		_ = producer.Publish(ctx, mq.TopicTaskLog, body)
+	}
+	executor := agent.NewStreamingExecutor(cfg.Agent.WorkDir, logSink)
+	// 控制面客户端：HTTP。
+	cp := agent.NewHTTPControlPlane(cfg.Agent.ControlPlaneURL)
 
 	ag := agent.New(agent.Config{
 		Hostname:          hostname,
@@ -73,6 +78,11 @@ func main() {
 	// 订阅任务下发。
 	if err := ag.SubscribeDispatch(); err != nil {
 		log.Error("订阅任务下发失败", "error", err)
+		os.Exit(1)
+	}
+	// 订阅任务控制指令（超时/抢占终止）。
+	if err := ag.SubscribeControl(); err != nil {
+		log.Error("订阅任务控制指令失败", "error", err)
 		os.Exit(1)
 	}
 	// 启动心跳循环。

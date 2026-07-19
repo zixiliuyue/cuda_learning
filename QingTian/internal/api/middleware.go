@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"qingtian/internal/auth"
+	"qingtian/internal/tracing"
 	"qingtian/pkg/apperr"
 	"qingtian/pkg/httpx"
 )
@@ -55,6 +56,28 @@ func LogMiddleware(log *slog.Logger) Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			log.Info("收到请求", "method", r.Method, "path", r.URL.Path)
 			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// TraceMiddleware 为每个请求开启一个根 Span，串联该请求下游调用的链路。
+//
+// 该中间件把 tracing.Span 注入请求 context，service 层通过 context 派生子 Span，
+// 从而形成 "HTTP 请求 -> 提交/调度" 的完整调用链。tracer 为 nil 时直接透传。
+//
+// 参数：
+//   - tracer: 追踪器；为 nil 时中间件不产生副作用。
+func TraceMiddleware(tracer *tracing.Tracer) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if tracer == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			ctx, span := tracer.Start(r.Context(), "http "+r.Method+" "+r.URL.Path)
+			span.SetAttr("http.method", r.Method).SetAttr("http.path", r.URL.Path)
+			defer span.Finish()
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

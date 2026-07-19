@@ -17,11 +17,15 @@ import (
 	"qingtian/internal/auth"
 	"qingtian/internal/bootstrap"
 	"qingtian/internal/config"
+	"qingtian/internal/domain"
 	"qingtian/internal/ledger"
 	"qingtian/internal/logger"
+	"qingtian/internal/metrics"
 	"qingtian/internal/mq"
+	"qingtian/internal/notify"
 	"qingtian/internal/scheduler"
 	"qingtian/internal/service"
+	"qingtian/internal/tracing"
 )
 
 func main() {
@@ -56,22 +60,51 @@ func main() {
 	resLedger := ledger.New()
 	sched := scheduler.New(resLedger, cfg.Scheduler.Strategy)
 
+	// 扩展服务：日志、存储、计量、配额、项目、通知。
+	logSvc := service.NewLogService(infra.LogStream, infra.Object)
+	storageSvc := service.NewStorageService(infra.Object, int(cfg.Auth.TokenTTL.Seconds()))
+	meteringSvc := service.NewMeteringService(infra.Store.Usages(), cfg.Metering.PricePerGPUHour)
+	quotaSvc := service.NewQuotaService(infra.Store.Quotas())
+	projectSvc := service.NewProjectService(infra.Store.Projects())
+	var notifier notify.Notifier
+	if cfg.Notify.WebhookURL != "" {
+		notifier = notify.NewWebhookNotifier(cfg.Notify.WebhookURL, cfg.Notify.Platform)
+	}
+
 	userSvc := service.NewUserService(infra.Store.Users(), tokens)
 	nodeSvc := service.NewNodeService(infra.Store.Nodes(), infra.Cache, resLedger, cfg.Scheduler.NodeTimeout)
-	taskSvc := service.NewTaskService(infra.Store.Tasks(), infra.Store.Nodes(), infra.Cache, infra.Producer, sched)
+	tracer := tracing.NewTracer(tracing.NewSlogExporter(log))
+	taskSvc := service.NewTaskService(infra.Store.Tasks(), infra.Store.Nodes(), infra.Cache, infra.Producer, sched).
+		WithLogService(logSvc).WithMetering(meteringSvc).WithQuota(quotaSvc).WithTracer(tracer)
+	if notifier != nil {
+		taskSvc = taskSvc.WithNotifier(notifier)
+	}
 
 	// 消费任务状态回传消息，更新任务状态。
 	if err := infra.Consumer.Subscribe(mq.TopicTaskStatus, "apiserver", taskSvc.HandleStatus); err != nil {
 		log.Error("订阅任务状态主题失败", "error", err)
 	}
+	// 消费任务日志回传消息，写入日志流供前端实时订阅。
+	if err := infra.Consumer.Subscribe(mq.TopicTaskLog, "apiserver", logSvc.HandleLog); err != nil {
+		log.Error("订阅任务日志主题失败", "error", err)
+	}
 
 	// 构建路由。
-	srv := api.NewServer(userSvc, nodeSvc, taskSvc, tokens)
+	metricsExporter := metrics.NewExporter(infra.Store.Nodes())
+	srv := api.NewServer(userSvc, nodeSvc, taskSvc, tokens).
+		WithLogService(logSvc).
+		WithStorageService(storageSvc).
+		WithMetering(meteringSvc).
+		WithQuota(quotaSvc).
+		WithProjects(projectSvc).
+		WithMetricsExporter(metricsExporter).
+		WithEdition(domain.Edition(cfg.Edition))
 	authMW := api.AuthMiddleware(tokens)
 	handler := api.Chain(
 		srv.Routes(authMW),
 		api.RecoverMiddleware(log),
 		api.LogMiddleware(log),
+		api.TraceMiddleware(tracer),
 		api.CORSMiddleware,
 	)
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"time"
 
 	"qingtian/internal/domain"
@@ -53,6 +54,11 @@ type Agent struct {
 	interval  time.Duration
 	log       *slog.Logger
 	nodeID    string
+
+	// running 记录正在执行任务的取消函数，键为任务 ID。
+	// 收到控制面的终止指令时，据此取消对应任务的执行上下文。
+	mu      sync.Mutex
+	running map[string]context.CancelFunc
 }
 
 // Config 是创建 Agent 所需的配置。
@@ -83,6 +89,7 @@ func New(cfg Config, collector Collector, executor Executor, cp ControlPlane, pr
 		consumer:  consumer,
 		interval:  cfg.HeartbeatInterval,
 		log:       log,
+		running:   make(map[string]context.CancelFunc),
 	}
 }
 
@@ -119,9 +126,39 @@ func (a *Agent) SubscribeDispatch() error {
 	return a.consumer.Subscribe(topic, "agent", a.handleDispatch)
 }
 
+// SubscribeControl 订阅本节点的任务控制主题，处理终止等指令。
+//
+// 返回值：
+//   - error: 订阅失败时返回。
+func (a *Agent) SubscribeControl() error {
+	topic := mq.TaskControlTopic(a.nodeID)
+	return a.consumer.Subscribe(topic, "agent", a.handleControl)
+}
+
+// handleControl 是任务控制指令的处理回调。
+//
+// 目前支持 kill 动作：取消对应任务的执行上下文，从而中断正在运行的进程。
+func (a *Agent) handleControl(_ context.Context, body []byte) error {
+	var msg mq.ControlMessage
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return err
+	}
+	if msg.Action != mq.ControlKill {
+		return nil
+	}
+	a.mu.Lock()
+	cancel, ok := a.running[msg.TaskID]
+	a.mu.Unlock()
+	if ok && cancel != nil {
+		a.log.Info("收到任务终止指令", "task_id", msg.TaskID, "reason", msg.Reason)
+		cancel()
+	}
+	return nil
+}
+
 // handleDispatch 是任务下发消息的处理回调。
 //
-// 处理流程：解析消息 -> 回传 running -> 执行 -> 回传 succeeded/failed。
+// 处理流程：解析消息 -> 登记可取消上下文 -> 回传 running -> 执行 -> 回传终态。
 func (a *Agent) handleDispatch(ctx context.Context, body []byte) error {
 	var msg mq.DispatchMessage
 	if err := json.Unmarshal(body, &msg); err != nil {
@@ -129,11 +166,29 @@ func (a *Agent) handleDispatch(ctx context.Context, body []byte) error {
 	}
 	a.log.Info("收到任务下发", "task_id", msg.TaskID)
 
+	// 派生可取消上下文并登记，支持控制面下达终止指令时中断执行。
+	execCtx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
+	a.running[msg.TaskID] = cancel
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.running, msg.TaskID)
+		a.mu.Unlock()
+		cancel()
+	}()
+
 	// 回传运行中状态。
 	a.reportStatus(ctx, msg.TaskID, domain.TaskRunning, 0, "任务开始执行", "")
 
-	// 执行任务。
-	result := a.executor.Execute(ctx, msg)
+	// 执行任务（使用可取消上下文）。
+	result := a.executor.Execute(execCtx, msg)
+
+	// 若因控制指令被取消，则不再覆盖控制面已置的终态（避免与超时/抢占状态冲突）。
+	if execCtx.Err() != nil {
+		a.log.Info("任务被终止，跳过终态回传", "task_id", msg.TaskID)
+		return nil
+	}
 
 	// 根据退出码回传终态。
 	if result.ExitCode == 0 && result.Err == nil {

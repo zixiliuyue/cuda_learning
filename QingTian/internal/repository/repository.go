@@ -49,3 +49,35 @@ type TaskRepository interface {
 	// ListByOwner 返回指定用户的任务列表。
 	ListByOwner(ctx context.Context, owner string) ([]*domain.Task, error)
 }
+
+// UsageRepository 定义算力用量记录的持久化能力，是成本计量与计费的凭证库。
+type UsageRepository interface {
+	// Create 追加一条用量记录。
+	Create(ctx context.Context, u *domain.UsageRecord) error
+	// List 返回全部用量记录。
+	List(ctx context.Context) ([]*domain.UsageRecord, error)
+	// ListByOwner 返回指定用户的用量记录。
+	ListByOwner(ctx context.Context, owner string) ([]*domain.UsageRecord, error)
+}
+
+// QuotaRepository 定义配额的持久化能力。
+type QuotaRepository interface {
+	// Get 按主体（用户/项目）查询配额，不存在时返回 CodeNotFound。
+	Get(ctx context.Context, subject string) (*domain.Quota, error)
+	// Upsert 创建或更新配额。
+	Upsert(ctx context.Context, q *domain.Quota) error
+	// AddUsage 原子累加主体的已用卡时，不存在配额时视为无限并忽略。
+	AddUsage(ctx context.Context, subject string, gpuHours float64) error
+}
+
+// ProjectRepository 定义项目/团队工作区的持久化能力。
+type ProjectRepository interface {
+	// Create 创建项目。
+	Create(ctx context.Context, p *domain.Project) error
+	// GetByID 按 ID 查询项目，不存在时返回 CodeNotFound。
+	GetByID(ctx context.Context, id string) (*domain.Project, error)
+	// Update 全量更新项目。
+	Update(ctx context.Context, p *domain.Project) error
+	// ListByMember 返回某用户所属的全部项目。
+	ListByMember(ctx context.Context, userID string) ([]*domain.Project, error)
+}

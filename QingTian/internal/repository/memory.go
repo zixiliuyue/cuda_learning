@@ -223,3 +223,154 @@ func (r *MemoryTaskRepo) ListByOwner(_ context.Context, owner string) ([]*domain
 	}
 	return out, nil
 }
+
+// MemoryUsageRepo 是 UsageRepository 的内存实现。
+type MemoryUsageRepo struct {
+	mu      sync.RWMutex
+	records []*domain.UsageRecord
+}
+
+// NewMemoryUsageRepo 创建内存用量仓储。
+func NewMemoryUsageRepo() *MemoryUsageRepo {
+	return &MemoryUsageRepo{}
+}
+
+// Create 实现 UsageRepository.Create。
+func (r *MemoryUsageRepo) Create(_ context.Context, u *domain.UsageRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *u
+	r.records = append(r.records, &cp)
+	return nil
+}
+
+// List 实现 UsageRepository.List。
+func (r *MemoryUsageRepo) List(_ context.Context) ([]*domain.UsageRecord, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*domain.UsageRecord, 0, len(r.records))
+	for _, u := range r.records {
+		cp := *u
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
+// ListByOwner 实现 UsageRepository.ListByOwner。
+func (r *MemoryUsageRepo) ListByOwner(_ context.Context, owner string) ([]*domain.UsageRecord, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*domain.UsageRecord, 0)
+	for _, u := range r.records {
+		if u.Owner == owner {
+			cp := *u
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+// MemoryQuotaRepo 是 QuotaRepository 的内存实现。
+type MemoryQuotaRepo struct {
+	mu     sync.RWMutex
+	quotas map[string]*domain.Quota
+}
+
+// NewMemoryQuotaRepo 创建内存配额仓储。
+func NewMemoryQuotaRepo() *MemoryQuotaRepo {
+	return &MemoryQuotaRepo{quotas: make(map[string]*domain.Quota)}
+}
+
+// Get 实现 QuotaRepository.Get。
+func (r *MemoryQuotaRepo) Get(_ context.Context, subject string) (*domain.Quota, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	q, ok := r.quotas[subject]
+	if !ok {
+		return nil, apperr.NotFound("配额不存在: " + subject)
+	}
+	cp := *q
+	return &cp, nil
+}
+
+// Upsert 实现 QuotaRepository.Upsert。
+func (r *MemoryQuotaRepo) Upsert(_ context.Context, q *domain.Quota) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *q
+	r.quotas[q.Subject] = &cp
+	return nil
+}
+
+// AddUsage 实现 QuotaRepository.AddUsage。
+func (r *MemoryQuotaRepo) AddUsage(_ context.Context, subject string, gpuHours float64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	q, ok := r.quotas[subject]
+	if !ok {
+		return nil // 无配额视为不限，忽略累加
+	}
+	q.UsedGPUHours += gpuHours
+	return nil
+}
+
+// MemoryProjectRepo 是 ProjectRepository 的内存实现。
+type MemoryProjectRepo struct {
+	mu       sync.RWMutex
+	projects map[string]*domain.Project
+}
+
+// NewMemoryProjectRepo 创建内存项目仓储。
+func NewMemoryProjectRepo() *MemoryProjectRepo {
+	return &MemoryProjectRepo{projects: make(map[string]*domain.Project)}
+}
+
+// Create 实现 ProjectRepository.Create。
+func (r *MemoryProjectRepo) Create(_ context.Context, p *domain.Project) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.projects[p.ID]; ok {
+		return apperr.Conflict("项目已存在: " + p.ID)
+	}
+	cp := *p
+	r.projects[p.ID] = &cp
+	return nil
+}
+
+// GetByID 实现 ProjectRepository.GetByID。
+func (r *MemoryProjectRepo) GetByID(_ context.Context, id string) (*domain.Project, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.projects[id]
+	if !ok {
+		return nil, apperr.NotFound("项目不存在: " + id)
+	}
+	cp := *p
+	return &cp, nil
+}
+
+// Update 实现 ProjectRepository.Update。
+func (r *MemoryProjectRepo) Update(_ context.Context, p *domain.Project) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.projects[p.ID]; !ok {
+		return apperr.NotFound("项目不存在: " + p.ID)
+	}
+	cp := *p
+	r.projects[p.ID] = &cp
+	return nil
+}
+
+// ListByMember 实现 ProjectRepository.ListByMember。
+func (r *MemoryProjectRepo) ListByMember(_ context.Context, userID string) ([]*domain.Project, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*domain.Project, 0)
+	for _, p := range r.projects {
+		if p.HasMember(userID) {
+			cp := *p
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}

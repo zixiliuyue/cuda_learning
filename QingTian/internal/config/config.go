@@ -71,6 +71,7 @@ type AgentConfig struct {
 // 不同服务只会用到其中一部分字段，共用同一结构可简化配置文件管理。
 type Config struct {
 	LogLevel  string          `yaml:"log_level"`
+	Edition   string          `yaml:"edition"` // 功能版本：community / enterprise
 	Server    ServerConfig    `yaml:"server"`
 	Mongo     MongoConfig     `yaml:"mongo"`
 	Redis     RedisConfig     `yaml:"redis"`
@@ -79,6 +80,19 @@ type Config struct {
 	Auth      AuthConfig      `yaml:"auth"`
 	Scheduler SchedulerConfig `yaml:"scheduler"`
 	Agent     AgentConfig     `yaml:"agent"`
+	Metering  MeteringConfig  `yaml:"metering"`
+	Notify    NotifyConfig    `yaml:"notify"`
+}
+
+// MeteringConfig 描述计量与计费配置。
+type MeteringConfig struct {
+	PricePerGPUHour float64 `yaml:"price_per_gpu_hour"` // 单位卡时价格（元/GPU·小时）
+}
+
+// NotifyConfig 描述任务通知配置。
+type NotifyConfig struct {
+	Platform   string `yaml:"platform"`    // 渠道：feishu / wecom
+	WebhookURL string `yaml:"webhook_url"` // 群机器人 Webhook 地址
 }
 
 // Load 从指定 YAML 文件加载配置，并应用默认值与环境变量覆盖。
@@ -109,6 +123,7 @@ func Load(path string) (*Config, error) {
 func Default() *Config {
 	return &Config{
 		LogLevel: "info",
+		Edition:  "community",
 		Server:   ServerConfig{Addr: ":8080"},
 		Mongo:    MongoConfig{URI: "mongodb://localhost:27017", Database: "qingtian"},
 		Redis:    RedisConfig{Addr: "localhost:6379", DB: 0},
@@ -124,6 +139,8 @@ func Default() *Config {
 			HeartbeatInterval: 5 * time.Second,
 			WorkDir:           "./agent-work",
 		},
+		Metering: MeteringConfig{PricePerGPUHour: 1.0},
+		Notify:   NotifyConfig{Platform: "feishu"},
 	}
 }
 

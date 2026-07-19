@@ -49,6 +49,26 @@ BLOCK_Y = 16
 # Day6 Tiled 矩阵乘法的 Tile 宽度
 TILE_WIDTH = 16
 
+# Day7 合并访问测试使用的矩阵行列数（小规模，保证运行速度快）
+COALESCED_ROWS = 128
+COALESCED_COLS = 128
+
+# Day9 归约测试使用的向量长度
+# 使用 BLOCK_SIZE 的整数倍，方便 Block 级归约对齐
+REDUCTION_SIZE = 4096
+
+# 归约测试容差 — 大量浮点累加存在误差，使用相对误差阈值
+REDUCTION_TOLERANCE = 1e-1
+
+# Day9 / Day10 每个 Block 的线程数（须为 32 的倍数，供 Warp 归约使用）
+REDUCTION_BLOCK_SIZE = 256
+
+# Day10 CUDA 流测试使用的向量长度（须为 NUM_STREAMS 的整数倍）
+STREAM_SIZE = 4096
+
+# Day10 流数量
+NUM_STREAMS = 4
+
 # ---------------------------------------------------------------------------
 # CUDA 可用性检查
 # ---------------------------------------------------------------------------
@@ -217,3 +237,44 @@ def cpu_matmul():
         b_2d = b.reshape(size, size)
         return (a_2d @ b_2d).flatten()
     return _matmul
+
+
+@pytest.fixture
+def random_coalesced_matrix():
+    """生成用于合并访问测试的随机矩阵（float32）。
+
+    以一维行优先数组形式返回，形状为 (COALESCED_ROWS * COALESCED_COLS,)，
+    供 Day7 行优先（合并）/ 列优先（非合并）求和 Kernel 使用。
+
+    返回:
+        numpy.ndarray: 一维 float32 数组
+    """
+    n = COALESCED_ROWS * COALESCED_COLS
+    return np.random.uniform(-1.0, 1.0, size=n).astype(np.float32)
+
+
+@pytest.fixture
+def random_reduction_vector():
+    """生成用于归约测试的随机正数向量（float32）。
+
+    使用正数区间 [0, 10) 以减小浮点累加时的相消误差，
+    供 Day9 原子 / 树形 / Warp Shuffle 归约测试使用。
+
+    返回:
+        numpy.ndarray: 形状为 (REDUCTION_SIZE,) 的一维 float32 数组
+    """
+    return np.random.uniform(0.0, 10.0, size=REDUCTION_SIZE).astype(np.float32)
+
+
+@pytest.fixture
+def random_stream_vectors():
+    """生成一对用于 CUDA 流测试的随机向量（float32）。
+
+    形状均为 (STREAM_SIZE,)，供 Day10 串行执行与多流并发执行测试使用。
+
+    返回:
+        tuple: (a, b)，两个一维 numpy 数组
+    """
+    a = np.random.uniform(-1.0, 1.0, size=STREAM_SIZE).astype(np.float32)
+    b = np.random.uniform(-1.0, 1.0, size=STREAM_SIZE).astype(np.float32)
+    return a, b

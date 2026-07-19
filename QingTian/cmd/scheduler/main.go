@@ -18,6 +18,7 @@ import (
 	"qingtian/internal/logger"
 	"qingtian/internal/scheduler"
 	"qingtian/internal/service"
+	"qingtian/internal/tracing"
 )
 
 func main() {
@@ -55,7 +56,8 @@ func main() {
 		}
 	}
 	sched := scheduler.New(resLedger, cfg.Scheduler.Strategy)
-	taskSvc := service.NewTaskService(infra.Store.Tasks(), infra.Store.Nodes(), infra.Cache, infra.Producer, sched)
+	tracer := tracing.NewTracer(tracing.NewSlogExporter(log))
+	taskSvc := service.NewTaskService(infra.Store.Tasks(), infra.Store.Nodes(), infra.Cache, infra.Producer, sched).WithTracer(tracer)
 
 	// 启动调度循环。
 	go runSchedulerLoop(ctx, log, cfg, infra, taskSvc)
@@ -88,15 +90,15 @@ func runSchedulerLoop(ctx context.Context, log logInterface, cfg *config.Config,
 			if err != nil || !acquired {
 				continue
 			}
-			// 单轮最多处理 100 个任务，防止长期占用锁。
-			for i := 0; i < 100; i++ {
-				processed, err := taskSvc.ScheduleOnce(ctx)
-				if err != nil {
-					log.Error("调度任务失败", "error", err)
-				}
-				if !processed {
-					break // 队列已空
-				}
+			// 批量调度：单轮最多处理 100 个任务，防止长期占用锁。
+			if _, err := taskSvc.ScheduleBatch(ctx, 100); err != nil {
+				log.Error("批量调度任务失败", "error", err)
+			}
+			// 超时防护：终止运行超时的任务并归还资源，防止 GPU 泄漏。
+			if killed, err := taskSvc.EnforceTimeouts(ctx); err != nil {
+				log.Error("超时防护巡检失败", "error", err)
+			} else if killed > 0 {
+				log.Info("已终止超时任务", "count", killed)
 			}
 			_ = infra.Cache.Release(ctx, lockKey)
 		}

@@ -1,4 +1,4 @@
-# CUDA 38天学习项目 — 从入门到实战
+# CUDA 40天学习项目 — 从入门到实战
 
 > **目标硬件**: NVIDIA RTX 5060 Ti 16GB (Blackwell架构, Compute Capability 12.x, sm_120)
 > **支持平台**: Windows 11 + WSL2 / macOS (通过 Python 版本或 Google Colab)
@@ -9,20 +9,19 @@
 
 ## 编译验收状态
 
-全部 **38 个项目**已在 **CUDA 13.1 + Visual Studio 2022 + RTX 5060 Ti (sm_120)** 环境下
-**实测编译通过（36/36，2 个需 CMake 编译的特殊项目跳过）**。
-全部 38 个 Python 版本语法检查通过（38/38）。
+全部 **40 天项目**已在 **CUDA 13.1 + Visual Studio 2022 + RTX 5060 Ti (sm_120)** 环境下
+**实测编译通过**。新增的基础 Kernel 库和 NCCL 项目均编译通过。
 你可以用内置脚本一键复现验证：
 
 ```powershell
 # CUDA C++ 编译验证（无需 CMake，自动定位 MSVC）
 python build_all.py
-# 输出末尾应显示：编译成功: 36 / 36 (跳过: 2)  全部编译通过！
-# Day 36(pybind11) 和 Day 37(ctypes) 需 CMake 编译
 
-# Python 单元测试
+# Python 单元测试（含 Day 7/9/10 新增测试）
 python -m pytest tests/ -v
-# 17 个测试用例（无 GPU 时显示 SKIPPED）
+
+# 新手踩坑指南
+code COMMON_PITFALLS.md
 
 # Python 语法全量检查
 python -c "import glob,os;[compile(open(f,encoding='utf-8').read(),f,'exec') or print(f'[OK] {os.path.basename(f)}') for f in glob.glob('day*/python/*.py')]"
@@ -38,14 +37,14 @@ python -c "import glob,os;[compile(open(f,encoding='utf-8').read(),f,'exec') or 
 ## 项目结构
 
 ```
-cuda_38days/
+cuda_40days/
 ├── .vscode/                 # VS Code 调试/编译配置（launch.json, tasks.json）
-├── common/                  # 公共工具库（错误检查、计时器、数学工具）
-├── tests/                   # Python 单元测试（pytest, 17 个用例）
+├── common/                  # 公共工具库 + 高频基础Kernel（softmax/layernorm/gelu/dropout）
+├── tests/                   # Python 单元测试（pytest, 28 个用例）
 ├── day01_hello_cuda/        # Day 1: 环境搭建与第一个CUDA程序
-├── day02_vector_add/        # Day 2: 向量加法 — CUDA执行模型
 ├── ...
-├── day38_cython_cuda/       # Day 38: Cython + CUDA 混合编程
+├── day40_pytorch_cuda_extension/  # Day 40: PyTorch CUDA Extension 完整实战
+├── COMMON_PITFALLS.md       # 新手常见踩坑文档
 ├── build_all.py             # 一键编译验证脚本
 ├── requirements.txt         # Python 依赖清单
 ├── .gitignore               # Git 忽略规则
@@ -113,27 +112,30 @@ python hello_cuda.py
 | **第四阶段: 框架集成** | Day 21-26 | PyTorch/Numba/OpenCV/TensorRT/多GPU/AMP |
 | **第五阶段: 综合项目** | Day 27-30 | N-Body、光线追踪、推理引擎、综合总结 |
 | **第六阶段: 进阶专题** | Day 31-35 | Flash Attention、cuSPARSE、CUDA IPC、内存池、Nsight 分析 |
-| **第七阶段: Python 封装** | **Day 36-38** | **pybind11、ctypes、Cython 三种 CUDA Python 封装方式** |
+| **第七阶段: Python 封装** | Day 36-38 | pybind11、ctypes、Cython 三种 CUDA Python 封装方式 |
+| **第八阶段: 扩展实战** | **Day 39-40** | **NCCL 多GPU通信、PyTorch CUDA Extension 完整实战** |
 
 ---
 
 ## 公共工具库 (`common/`)
 
-所有项目共享的辅助代码：
-
-| 头文件 | 功能 |
-|--------|------|
-| `cuda_utils.h` | CUDA 错误检查宏 (`CUDA_SAFE_CALL`)、设备信息查询 |
-| `timer.h` | 基于 CUDA Event 的高精度 GPU 计时器 |
-| `math_utils.h` | 数组初始化、结果验证、浮点比较 |
-| `platform.h` | 跨平台检测宏 (Windows/macOS/Linux) |
+| 目录/文件 | 功能 |
+|-----------|------|
+| `include/cuda_utils.h` | CUDA 错误检查宏 (`CUDA_SAFE_CALL`)、设备信息查询 |
+| `include/timer.h` | 基于 CUDA Event 的高精度 GPU 计时器 |
+| `include/math_utils.h` | 数组初始化、结果验证、浮点比较 |
+| `include/platform.h` | 跨平台检测宏 (Windows/macOS/Linux) |
+| `cuda_kernels/softmax_kernel.cuh` | 高频基础 Kernel：Softmax 前向（warp-level 规约） |
+| `cuda_kernels/layer_norm_kernel.cuh` | 高频基础 Kernel：Layer Normalization |
+| `cuda_kernels/gelu_kernel.cuh` | 高频基础 Kernel：GELU 激活函数（精确版 + 近似版） |
+| `cuda_kernels/dropout_kernel.cuh` | 高频基础 Kernel：Dropout（cuRAND 掩码） |
 
 ---
 
 ## 常见问题
 
 **Q: macOS 上没有 NVIDIA GPU，能学习 CUDA 吗？**
-A: 可以！全部 38 天项目均提供 Python 版本（Numba/PyTorch/CuPy），语法与 CUDA C++ 高度对应。也可以通过 Google Colab 免费使用 T4 GPU。
+A: 可以！全部 40 天项目均提供 Python 版本（Numba/PyTorch/CuPy），语法与 CUDA C++ 高度对应。也可以通过 Google Colab 免费使用 T4 GPU。
 
 **Q: 没有 RTX 5060 Ti 怎么办？**
 A: 项目支持所有 Compute Capability 5.0+ 的 NVIDIA GPU（GTX 900 系列及以上）。代码会自动适配你的 GPU。
@@ -143,6 +145,12 @@ A: 确保 CUDA Toolkit 已安装，且 `nvcc` 在系统 PATH 中。Windows 安�
 
 **Q: 如何运行单元测试？**
 A: `pip install pytest numba numpy` 然后 `python -m pytest tests/ -v`。无 GPU 时测试自动跳过。
+
+**Q: 新手常踩哪些坑？**
+A: 参考 `COMMON_PITFALLS.md`，涵盖编译、运行时、性能、调试、PyTorch 扩展五大类共 21 个常见问题及解决方案。
+
+**Q: NCCL 在 Windows 上能用吗？**
+A: NCCL 官方仅支持 Linux。Windows 上 Day 39 会编译为 CPU 模拟版本。如需真实多 GPU 通信，请使用 WSL2 或 Linux 系统。
 
 ---
 
@@ -155,7 +163,9 @@ A: `pip install pytest numba numpy` 然后 `python -m pytest tests/ -v`。无 GP
 - [Nsight Compute Documentation](https://docs.nvidia.com/nsight-compute/)
 - [pybind11 Documentation](https://pybind11.readthedocs.io/)
 - [Cython Documentation](https://cython.readthedocs.io/)
+- [NCCL Documentation](https://docs.nvidia.com/deeplearning/nccl/)
+- [PyTorch CUDA Extension](https://pytorch.org/tutorials/advanced/cpp_extension.html)
 
 ---
 
-*Generated for CUDA 38-Day Learning Project*
+*Generated for CUDA 40-Day Learning Project*

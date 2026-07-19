@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ============================================================================
-build_all.py  —  CUDA 38天项目 一键编译验证脚本（无需 CMake）
+build_all.py  —  CUDA 40+天项目 一键编译验证脚本（无需 CMake）
 ============================================================================
 
 功能：
@@ -31,7 +31,7 @@ import subprocess
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 COMMON_INC = os.path.join(ROOT, "common", "include")
-OUT_DIR = os.path.join(os.environ.get("TEMP", os.path.join(ROOT, "_tmp")), "cuda38_build")
+OUT_DIR = os.path.join(os.environ.get("TEMP", os.path.join(ROOT, "_tmp")), "cuda40_build")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # 需额外链接库/选项的特殊项目
@@ -46,7 +46,22 @@ EXTRA_ARGS = {
 SKIP_DAYS = {
     "day36_pybind11_cuda",      # 需要 pybind11 头文件，只能通过 CMake 编译
     "day37_ctypes_cuda",        # 共享库（无 main()），只能通过 CMake 编译
+    "day40_pytorch_cuda_extension",  # 需要 PyTorch 头文件，只能通过 setup.py 编译
 }
+
+# 需要特殊编译选项的 day
+SPECIAL_OPTIONS = {
+    "day31_flash_attention": ["-O1"],  # LLVM 后端在 -O3 下内存不足，降为 -O1
+}
+
+# 额外需要编译的路径（非 day*/src/main.cu 格式）
+EXTRA_SOURCES = [
+    {
+        "name": "common_cuda_kernels_demo",
+        "src": os.path.join(ROOT, "common", "cuda_kernels", "demo.cu"),
+        "inc": os.path.join(ROOT, "common", "cuda_kernels"),
+    },
+]
 
 
 def find_msvc_bin():
@@ -94,7 +109,12 @@ def main():
         # Windows/MSVC：用 /utf-8 消除中文源码的 C4819 警告
         if os.name == "nt":
             cmd += ["-Xcompiler", "/utf-8"]
+        # Day 39: NCCL 在 Windows 上不可用，定义 HAS_NCCL=0
+        if name == "day39_nccl_allreduce":
+            cmd += ["-DHAS_NCCL=0"]
         cmd += EXTRA_ARGS.get(name, [])
+        # 特殊编译选项（如降低优化等级避免 LLVM OOM）
+        cmd += SPECIAL_OPTIONS.get(name, [])
 
         r = subprocess.run(cmd, env=env, capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
@@ -107,6 +127,27 @@ def main():
                 if "error" in line.lower():
                     print("         " + line.strip())
             fail.append(name)
+
+    # 编译额外源文件（如 common/cuda_kernels/demo.cu）
+    for extra in EXTRA_SOURCES:
+        if not os.path.exists(extra["src"]):
+            continue
+        out = os.path.join(OUT_DIR, extra["name"] + (".exe" if os.name == "nt" else ""))
+        cmd = ["nvcc", "-arch=" + arch, "-I", COMMON_INC,
+               "-I", extra["inc"], extra["src"], "-o", out]
+        if os.name == "nt":
+            cmd += ["-Xcompiler", "/utf-8"]
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        if r.returncode == 0 and os.path.exists(out):
+            print("  [OK]   %s" % extra["name"])
+            ok.append(extra["name"])
+        else:
+            print("  [FAIL] %s" % extra["name"])
+            for line in (r.stderr or "").splitlines():
+                if "error" in line.lower():
+                    print("         " + line.strip())
+            fail.append(extra["name"])
 
     print("=" * 60)
     print("编译成功: %d / %d (跳过: %d)" % (len(ok), len(ok) + len(fail), len(skip)))

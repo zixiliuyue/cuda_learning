@@ -13,6 +13,7 @@ import (
 
 	"qingtian/internal/cache"
 	"qingtian/internal/config"
+	"qingtian/internal/logstream"
 	"qingtian/internal/mq"
 	"qingtian/internal/repository"
 	"qingtian/internal/storage"
@@ -20,12 +21,13 @@ import (
 
 // Infra 聚合所有已连接的基础设施客户端。
 type Infra struct {
-	Mongo    *mongo.Client
-	Store    *repository.MongoStore
-	Cache    *cache.RedisCache
-	Producer *mq.NSQProducer
-	Consumer *mq.NSQConsumer
-	Object   *storage.MinIOStore
+	Mongo     *mongo.Client
+	Store     *repository.MongoStore
+	Cache     *cache.RedisCache
+	Producer  *mq.NSQProducer
+	Consumer  *mq.NSQConsumer
+	Object    *storage.MinIOStore
+	LogStream *logstream.RedisStreamer
 }
 
 // Connect 根据配置连接所有外部中间件。
@@ -75,13 +77,17 @@ func Connect(ctx context.Context, cfg *config.Config) (*Infra, error) {
 		return nil, err
 	}
 
+	// 日志流（复用 Redis 连接配置，独立客户端）。
+	logStream := logstream.NewRedisStreamer(cfg.Redis, 24*time.Hour)
+
 	return &Infra{
-		Mongo:    mclient,
-		Store:    store,
-		Cache:    rcache,
-		Producer: producer,
-		Consumer: consumer,
-		Object:   object,
+		Mongo:     mclient,
+		Store:     store,
+		Cache:     rcache,
+		Producer:  producer,
+		Consumer:  consumer,
+		Object:    object,
+		LogStream: logStream,
 	}, nil
 }
 

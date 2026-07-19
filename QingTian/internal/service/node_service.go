@@ -147,3 +147,56 @@ func (s *NodeService) SetOffline(ctx context.Context, id string) error {
 	}
 	return s.cache.Del(ctx, heartbeatKeyPrefix+id)
 }
+
+// IdleNode 表示一个被判定为空闲的节点及其空闲信息，供空闲卡回收使用。
+type IdleNode struct {
+	NodeID     string  `json:"node_id"`     // 节点 ID
+	Hostname   string  `json:"hostname"`    // 主机名
+	AllocRatio float64 `json:"alloc_ratio"` // 账本显存分配率（0-1）
+	MaxUtil    int     `json:"max_util"`    // 节点内 GPU 的最高实时利用率
+}
+
+// DetectIdleNodes 检测空闲节点，用于自动缩容/降功耗、降低运营成本。
+//
+// 判定标准：账本显存分配率为 0（无任务占用）且所有 GPU 的实时利用率
+// 均不超过 utilThreshold。空闲卡长期空转是能耗浪费，识别后可自动降功耗，
+// 强化平台"省钱"叙事。
+//
+// 参数：
+//   - ctx:           上下文。
+//   - utilThreshold: 判定空闲的利用率阈值（0-100）。
+//
+// 返回值：
+//   - []IdleNode: 空闲节点列表（仅统计在线节点）。
+//   - error:      读取节点失败时返回。
+func (s *NodeService) DetectIdleNodes(ctx context.Context, utilThreshold int) ([]IdleNode, error) {
+	nodes, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var idle []IdleNode
+	for _, n := range nodes {
+		alive, _ := s.IsAlive(ctx, n.ID)
+		if !alive {
+			continue // 离线节点不参与空闲回收
+		}
+		if s.ledger.NodeUtilization(n.ID) > 0 {
+			continue // 账本上仍有占用，非空闲
+		}
+		maxUtil := 0
+		for _, g := range n.GPUs {
+			if g.Utilization > maxUtil {
+				maxUtil = g.Utilization
+			}
+		}
+		if maxUtil <= utilThreshold {
+			idle = append(idle, IdleNode{
+				NodeID:     n.ID,
+				Hostname:   n.Hostname,
+				AllocRatio: 0,
+				MaxUtil:    maxUtil,
+			})
+		}
+	}
+	return idle, nil
+}

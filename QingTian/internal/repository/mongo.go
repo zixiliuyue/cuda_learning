@@ -37,6 +37,21 @@ func (s *MongoStore) Nodes() *MongoNodeRepo { return &MongoNodeRepo{col: s.db.Co
 // Tasks 返回任务仓储的 MongoDB 实现。
 func (s *MongoStore) Tasks() *MongoTaskRepo { return &MongoTaskRepo{col: s.db.Collection("tasks")} }
 
+// Usages 返回用量仓储的 MongoDB 实现。
+func (s *MongoStore) Usages() *MongoUsageRepo {
+	return &MongoUsageRepo{col: s.db.Collection("usages")}
+}
+
+// Quotas 返回配额仓储的 MongoDB 实现。
+func (s *MongoStore) Quotas() *MongoQuotaRepo {
+	return &MongoQuotaRepo{col: s.db.Collection("quotas")}
+}
+
+// Projects 返回项目仓储的 MongoDB 实现。
+func (s *MongoStore) Projects() *MongoProjectRepo {
+	return &MongoProjectRepo{col: s.db.Collection("projects")}
+}
+
 // MongoUserRepo 是 UserRepository 的 MongoDB 实现。
 type MongoUserRepo struct{ col *mongo.Collection }
 
@@ -217,6 +232,125 @@ func (r *MongoTaskRepo) ListByOwner(ctx context.Context, owner string) ([]*domai
 	}
 	defer cur.Close(ctx)
 	var out []*domain.Task
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// MongoUsageRepo 是 UsageRepository 的 MongoDB 实现。
+type MongoUsageRepo struct{ col *mongo.Collection }
+
+// Create 实现 UsageRepository.Create。
+func (r *MongoUsageRepo) Create(ctx context.Context, u *domain.UsageRecord) error {
+	_, err := r.col.InsertOne(ctx, u)
+	return err
+}
+
+// List 实现 UsageRepository.List。
+func (r *MongoUsageRepo) List(ctx context.Context) ([]*domain.UsageRecord, error) {
+	cur, err := r.col.Find(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []*domain.UsageRecord
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListByOwner 实现 UsageRepository.ListByOwner。
+func (r *MongoUsageRepo) ListByOwner(ctx context.Context, owner string) ([]*domain.UsageRecord, error) {
+	cur, err := r.col.Find(ctx, bson.M{"owner": owner})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []*domain.UsageRecord
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// MongoQuotaRepo 是 QuotaRepository 的 MongoDB 实现。
+type MongoQuotaRepo struct{ col *mongo.Collection }
+
+// Get 实现 QuotaRepository.Get。
+func (r *MongoQuotaRepo) Get(ctx context.Context, subject string) (*domain.Quota, error) {
+	var q domain.Quota
+	err := r.col.FindOne(ctx, bson.M{"_id": subject}).Decode(&q)
+	if err == mongo.ErrNoDocuments {
+		return nil, apperr.NotFound("配额不存在: " + subject)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &q, nil
+}
+
+// Upsert 实现 QuotaRepository.Upsert。
+func (r *MongoQuotaRepo) Upsert(ctx context.Context, q *domain.Quota) error {
+	opts := options.Replace().SetUpsert(true)
+	_, err := r.col.ReplaceOne(ctx, bson.M{"_id": q.Subject}, q, opts)
+	return err
+}
+
+// AddUsage 实现 QuotaRepository.AddUsage。
+func (r *MongoQuotaRepo) AddUsage(ctx context.Context, subject string, gpuHours float64) error {
+	// 仅在配额存在时累加；不存在视为不限，忽略。
+	_, err := r.col.UpdateOne(ctx, bson.M{"_id": subject},
+		bson.M{"$inc": bson.M{"used_gpu_hours": gpuHours}})
+	return err
+}
+
+// MongoProjectRepo 是 ProjectRepository 的 MongoDB 实现。
+type MongoProjectRepo struct{ col *mongo.Collection }
+
+// Create 实现 ProjectRepository.Create。
+func (r *MongoProjectRepo) Create(ctx context.Context, p *domain.Project) error {
+	_, err := r.col.InsertOne(ctx, p)
+	if mongo.IsDuplicateKeyError(err) {
+		return apperr.Conflict("项目已存在: " + p.ID)
+	}
+	return err
+}
+
+// GetByID 实现 ProjectRepository.GetByID。
+func (r *MongoProjectRepo) GetByID(ctx context.Context, id string) (*domain.Project, error) {
+	var p domain.Project
+	err := r.col.FindOne(ctx, bson.M{"_id": id}).Decode(&p)
+	if err == mongo.ErrNoDocuments {
+		return nil, apperr.NotFound("项目不存在: " + id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// Update 实现 ProjectRepository.Update。
+func (r *MongoProjectRepo) Update(ctx context.Context, p *domain.Project) error {
+	res, err := r.col.ReplaceOne(ctx, bson.M{"_id": p.ID}, p)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return apperr.NotFound("项目不存在: " + p.ID)
+	}
+	return nil
+}
+
+// ListByMember 实现 ProjectRepository.ListByMember。
+func (r *MongoProjectRepo) ListByMember(ctx context.Context, userID string) ([]*domain.Project, error) {
+	cur, err := r.col.Find(ctx, bson.M{"members": userID})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []*domain.Project
 	if err := cur.All(ctx, &out); err != nil {
 		return nil, err
 	}

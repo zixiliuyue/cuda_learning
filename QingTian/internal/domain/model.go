@@ -182,6 +182,8 @@ const (
 	FailureCanceled     FailureCategory = "canceled"      // 被主动取消
 	FailureUnknown      FailureCategory = "unknown"       // 未能识别的失败
 	FailureStartFailure FailureCategory = "start_failure" // 进程无法启动
+	FailureTimeout      FailureCategory = "timeout"       // 运行超时被强制终止
+	FailurePreempted    FailureCategory = "preempted"     // 被高优先级任务抢占
 )
 
 // Task 表示一个算力任务。
@@ -203,6 +205,8 @@ const (
 //   - LogPath:       任务日志在 MinIO 中的归档对象路径。
 //   - CheckpointPath: 最近一次 Checkpoint 在 MinIO 中的对象路径（断点续跑用）。
 //   - GangID:        Gang（成组调度）标识，同组任务共享该 ID。
+//   - TimeoutSeconds: 运行超时秒数；>0 时超过该时长仍未结束将被强制终止（0 表示不限）。
+//   - Preemptible:   是否可被高优先级任务抢占（竞价/Spot 语义）。
 //   - ExitCode:      进程退出码（结束后有效）。
 //   - Message:       附加信息（如失败原因）。
 //   - FailureCategory: 结构化失败归类，供失败诊断展示。
@@ -224,6 +228,8 @@ type Task struct {
 	LogPath         string          `json:"log_path,omitempty" bson:"log_path,omitempty"`
 	CheckpointPath  string          `json:"checkpoint_path,omitempty" bson:"checkpoint_path,omitempty"`
 	GangID          string          `json:"gang_id,omitempty" bson:"gang_id,omitempty"`
+	TimeoutSeconds  int64           `json:"timeout_seconds,omitempty" bson:"timeout_seconds,omitempty"`
+	Preemptible     bool            `json:"preemptible,omitempty" bson:"preemptible,omitempty"`
 	ExitCode        int             `json:"exit_code" bson:"exit_code"`
 	Message         string          `json:"message" bson:"message"`
 	FailureCategory FailureCategory `json:"failure_category,omitempty" bson:"failure_category,omitempty"`
@@ -231,6 +237,32 @@ type Task struct {
 	UpdatedAt       time.Time       `json:"updated_at" bson:"updated_at"`
 	StartedAt       *time.Time      `json:"started_at,omitempty" bson:"started_at,omitempty"`
 	FinishedAt      *time.Time      `json:"finished_at,omitempty" bson:"finished_at,omitempty"`
+}
+
+// IsActive 判断任务是否处于占用资源的活动状态（已调度或运行中）。
+func (t *Task) IsActive() bool {
+	return t.Status == TaskScheduled || t.Status == TaskRunning
+}
+
+// IsTimedOut 判断运行中的任务是否已超过其允许的最大运行时长。
+//
+// 仅当任务设置了正的 TimeoutSeconds、已进入运行态（StartedAt 非空）时才可能返回 true。
+// 该方法是纯函数（不修改状态），便于在守护循环中安全调用与单元测试。
+//
+// 参数：
+//   - now: 当前时间，由调用方注入以便测试。
+//
+// 返回值：
+//   - bool: true 表示任务运行时长已超限，应被强制终止。
+func (t *Task) IsTimedOut(now time.Time) bool {
+	if t.TimeoutSeconds <= 0 || t.StartedAt == nil {
+		return false
+	}
+	if t.Status != TaskRunning {
+		return false
+	}
+	deadline := t.StartedAt.Add(time.Duration(t.TimeoutSeconds) * time.Second)
+	return now.After(deadline)
 }
 
 // Project 表示一个团队工作区/项目空间。

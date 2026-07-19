@@ -16,7 +16,9 @@ const form = reactive({
   priority: 0,
   gpu_count: 1,
   memory_mb: 8192,
-  gpu_model: ''
+  gpu_model: '',
+  timeout_seconds: 0,
+  preemptible: false
 })
 
 const columns = [
@@ -52,7 +54,7 @@ async function loadTasks() {
 
 // 打开提交任务弹窗。
 function openModal() {
-  Object.assign(form, { name: '', image: '', command: '', priority: 0, gpu_count: 1, memory_mb: 8192, gpu_model: '' })
+  Object.assign(form, { name: '', image: '', command: '', priority: 0, gpu_count: 1, memory_mb: 8192, gpu_model: '', timeout_seconds: 0, preemptible: false })
   modalVisible.value = true
 }
 
@@ -68,6 +70,8 @@ async function submitTask() {
       image: form.image,
       command: form.command,
       priority: form.priority,
+      timeout_seconds: form.timeout_seconds,
+      preemptible: form.preemptible,
       resource: {
         gpu_count: form.gpu_count,
         memory_mb: form.memory_mb,
@@ -151,6 +155,18 @@ onMounted(loadTasks)
           <a-grid-item>
             <a-form-item label="GPU 型号 (可选)">
               <a-input v-model="form.gpu_model" placeholder="留空不限" />
+            </a-form-item>
+          </a-grid-item>
+        </a-grid>
+        <a-grid :cols="2" :col-gap="16">
+          <a-grid-item>
+            <a-form-item label="超时时间 (秒，0 不限)">
+              <a-input-number v-model="form.timeout_seconds" :min="0" :step="60" />
+            </a-form-item>
+          </a-grid-item>
+          <a-grid-item>
+            <a-form-item label="可被抢占">
+              <a-switch v-model="form.preemptible" />
             </a-form-item>
           </a-grid-item>
         </a-grid>
