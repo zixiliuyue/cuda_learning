@@ -22,7 +22,7 @@ export default defineConfig({
       output: {
         manualChunks: {
           // Vue 全家桶单独成包。
-          vue: ['vue', 'vue-router', 'pinia'],
+          vue: ['vue', 'vue-router', 'pinia', 'vue-i18n'],
           // Arco Design UI 库体积最大，单独拆分以最大化缓存命中。
           arco: ['@arco-design/web-vue'],
           // 网络库。

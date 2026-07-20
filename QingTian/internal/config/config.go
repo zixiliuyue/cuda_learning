@@ -56,6 +56,9 @@ type SchedulerConfig struct {
 	Interval    time.Duration `yaml:"interval"`     // 调度轮询间隔
 	Strategy    string        `yaml:"strategy"`     // 调度策略：binpack / spread
 	NodeTimeout time.Duration `yaml:"node_timeout"` // 节点心跳超时时间，超时判离线
+	// 闲置资源自动回收配置
+	IdleThresholdUtil     int           `yaml:"idle_threshold_util"`      // 利用率阈值（百分比），低于此值认为空闲
+	IdleThresholdDuration time.Duration `yaml:"idle_threshold_duration"`  // 持续空闲多久才触发自动回收
 }
 
 // AgentConfig 描述 Agent 配置。
@@ -131,9 +134,11 @@ func Default() *Config {
 		MinIO:    MinIOConfig{Endpoint: "localhost:9000", AccessKey: "minioadmin", SecretKey: "minioadmin", Bucket: "qingtian"},
 		Auth:     AuthConfig{JWTSecret: "change-me-in-production", TokenTTL: 24 * time.Hour},
 		Scheduler: SchedulerConfig{
-			Interval:    2 * time.Second,
-			Strategy:    "binpack",
-			NodeTimeout: 30 * time.Second,
+			Interval:             2 * time.Second,
+			Strategy:             "binpack",
+			NodeTimeout:          30 * time.Second,
+			IdleThresholdUtil:    10, // 默认利用率低于 10% 认为空闲
+			IdleThresholdDuration: 30 * time.Minute, // 持续空闲 30 分钟才触发回收
 		},
 		Agent: AgentConfig{
 			HeartbeatInterval: 5 * time.Second,

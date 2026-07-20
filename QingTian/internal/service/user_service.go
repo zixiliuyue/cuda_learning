@@ -46,6 +46,12 @@ func (s *UserService) Register(ctx context.Context, username, password string, r
 	if username == "" || password == "" {
 		return nil, apperr.InvalidArgument("用户名和密码不能为空")
 	}
+	// 先查重：用户名已存在则直接返回冲突。
+	// 这是确定性业务规则，不依赖数据库唯一索引，避免因缺索引导致重复账号。
+	// 仓储层的唯一索引作为并发场景下的最后防线（见 mongo.go EnsureIndexes）。
+	if _, err := s.repo.GetByUsername(ctx, username); err == nil {
+		return nil, apperr.Conflict("用户名已存在: " + username)
+	}
 	hash, err := auth.HashPassword(password)
 	if err != nil {
 		return nil, err

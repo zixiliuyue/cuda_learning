@@ -13,6 +13,7 @@ import (
 	"qingtian/internal/mq"
 	"qingtian/internal/repository"
 	"qingtian/internal/scheduler"
+	"qingtian/pkg/apperr"
 )
 
 // jsonMarshal 是测试用的 JSON 序列化辅助函数。
@@ -52,6 +53,70 @@ func TestUserRegisterLogin(t *testing.T) {
 	// 错误密码。
 	if _, _, err := svc.Login(ctx, "alice", "wrong"); err == nil {
 		t.Error("错误密码应登录失败")
+	}
+}
+
+// noDedupUserRepo 是一个 Create 永不去重的假仓储，用于模拟
+// MongoDB 缺少 username 唯一索引的场景：Create 总是成功。
+// 借此验证 UserService.Register 的查重逻辑不依赖仓储去重，
+// 而是服务层自己拦住重复用户名（这正是之前重复 admin 的根因所在）。
+type noDedupUserRepo struct {
+	users map[string]*domain.User // key: username
+}
+
+func newNoDedupUserRepo() *noDedupUserRepo {
+	return &noDedupUserRepo{users: make(map[string]*domain.User)}
+}
+
+// Create 永远成功，不做任何去重（模拟无唯一索引）。
+func (r *noDedupUserRepo) Create(_ context.Context, u *domain.User) error {
+	r.users[u.Username] = u
+	return nil
+}
+
+func (r *noDedupUserRepo) GetByID(_ context.Context, id string) (*domain.User, error) {
+	for _, u := range r.users {
+		if u.ID == id {
+			return u, nil
+		}
+	}
+	return nil, apperr.NotFound("用户不存在: " + id)
+}
+
+func (r *noDedupUserRepo) GetByUsername(_ context.Context, username string) (*domain.User, error) {
+	if u, ok := r.users[username]; ok {
+		return u, nil
+	}
+	return nil, apperr.NotFound("用户不存在: " + username)
+}
+
+func (r *noDedupUserRepo) List(_ context.Context) ([]*domain.User, error) {
+	out := make([]*domain.User, 0, len(r.users))
+	for _, u := range r.users {
+		out = append(out, u)
+	}
+	return out, nil
+}
+
+// TestRegisterRejectsDuplicateWithoutRepoDedup 验证：即使仓储层不做去重，
+// 服务层也必须拦住重复用户名，返回冲突错误。
+func TestRegisterRejectsDuplicateWithoutRepoDedup(t *testing.T) {
+	repo := newNoDedupUserRepo()
+	tm := auth.NewTokenManager("secret", time.Hour)
+	svc := NewUserService(repo, tm)
+	ctx := context.Background()
+
+	if _, err := svc.Register(ctx, "admin", "pass123", domain.RoleAdmin); err != nil {
+		t.Fatalf("首次注册应成功: %v", err)
+	}
+	// 第二次注册同名用户，服务层应返回冲突，而非再次成功。
+	if _, err := svc.Register(ctx, "admin", "other", domain.RoleAdmin); err == nil {
+		t.Fatal("重复用户名应被服务层拦截，返回冲突错误")
+	}
+	// 确认库中只存在一个 admin。
+	users, _ := repo.List(ctx)
+	if len(users) != 1 {
+		t.Fatalf("应只存在 1 个用户，实际 %d 个", len(users))
 	}
 }
 

@@ -1,5 +1,6 @@
 # QingTian 调度器服务配置示例
 log_level: info
+edition: enterprise
 
 mongo:
   uri: "mongodb://localhost:27017"

@@ -28,6 +28,22 @@ func NewMongoStore(db *mongo.Database) *MongoStore {
 	return &MongoStore{db: db}
 }
 
+// EnsureIndexes 创建集合的必要索引，应在服务启动时调用一次。
+//
+// 目前保证 users.username 唯一，作为并发注册下防止重复账号的最后防线。
+// 服务层已有查重逻辑，此处是数据库层兜底；两者配合避免重复用户名。
+//
+// 注意：若集合中已存在重复 username 数据，创建唯一索引会失败，
+// 需先清理重复数据（见部署脚本 --dedup-users）。
+func (s *MongoStore) EnsureIndexes(ctx context.Context) error {
+	userIdx := mongo.IndexModel{
+		Keys:    bson.D{{Key: "username", Value: 1}},
+		Options: options.Index().SetUnique(true).SetName("uniq_username"),
+	}
+	_, err := s.db.Collection("users").Indexes().CreateOne(ctx, userIdx)
+	return err
+}
+
 // Users 返回用户仓储的 MongoDB 实现。
 func (s *MongoStore) Users() *MongoUserRepo { return &MongoUserRepo{col: s.db.Collection("users")} }
 

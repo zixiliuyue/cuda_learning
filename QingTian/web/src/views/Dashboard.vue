@@ -1,8 +1,10 @@
 <script setup>
 // 概览页：展示节点数、在线节点、任务状态统计等关键指标。
 import { ref, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { nodeApi, taskApi } from '../api'
 
+const { t } = useI18n()
 const loading = ref(false)
 const stats = ref({
   totalNodes: 0,
@@ -41,27 +43,27 @@ onMounted(loadStats)
   <a-spin :loading="loading" style="display: block">
     <a-grid :cols="{ xs: 1, sm: 2, md: 3, lg: 5 }" :col-gap="16" :row-gap="16">
       <a-grid-item>
-        <a-card><a-statistic title="节点总数" :value="stats.totalNodes" /></a-card>
+        <a-card><a-statistic :title="t('dashboard.totalNodes')" :value="stats.totalNodes" /></a-card>
       </a-grid-item>
       <a-grid-item>
-        <a-card><a-statistic title="在线节点" :value="stats.onlineNodes" /></a-card>
+        <a-card><a-statistic :title="t('dashboard.onlineNodes')" :value="stats.onlineNodes" /></a-card>
       </a-grid-item>
       <a-grid-item>
-        <a-card><a-statistic title="GPU 总数" :value="stats.totalGPUs" /></a-card>
+        <a-card><a-statistic :title="t('dashboard.totalGPUs')" :value="stats.totalGPUs" /></a-card>
       </a-grid-item>
       <a-grid-item>
-        <a-card><a-statistic title="运行中任务" :value="stats.runningTasks" /></a-card>
+        <a-card><a-statistic :title="t('dashboard.runningTasks')" :value="stats.runningTasks" /></a-card>
       </a-grid-item>
       <a-grid-item>
-        <a-card><a-statistic title="待调度任务" :value="stats.pendingTasks" /></a-card>
+        <a-card><a-statistic :title="t('dashboard.pendingTasks')" :value="stats.pendingTasks" /></a-card>
       </a-grid-item>
     </a-grid>
-    <a-card style="margin-top: 16px" title="平台说明">
+    <a-card style="margin-top: 16px" :title="t('dashboard.platformTitle')">
       <template #extra>
-        <a-button size="small" @click="loadStats" :loading="loading">刷新</a-button>
+        <a-button size="small" @click="loadStats" :loading="loading">{{ t('common.refresh') }}</a-button>
       </template>
-      <p>QingTian（擎天）是基于 CUDA 的算力调度平台，提供 GPU 节点纳管、任务调度、资源隔离与可观测能力。</p>
-      <p>请在「节点管理」查看已纳管的 GPU 节点，在「任务管理」提交与跟踪算力任务。</p>
+      <p>{{ t('dashboard.intro1') }}</p>
+      <p>{{ t('dashboard.intro2') }}</p>
     </a-card>
   </a-spin>
 </template>

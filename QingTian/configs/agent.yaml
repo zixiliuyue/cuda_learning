@@ -1,5 +1,6 @@
 # QingTian Agent 配置示例
 log_level: info
+edition: enterprise
 
 nsq:
   nsqd_addr: "localhost:4150"

@@ -2,8 +2,11 @@
 // 主框架：左侧菜单 + 顶部栏 + 内容区。
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '../store/auth'
+import LocaleThemeSwitch from '../components/LocaleThemeSwitch.vue'
 
+const { t } = useI18n()
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
@@ -29,19 +32,22 @@ function logout() {
 <template>
   <a-layout class="layout">
     <a-layout-sider :width="220" theme="dark">
-      <div class="logo">QingTian 擎天</div>
+      <div class="logo">{{ t('login.brand') }}</div>
       <a-menu theme="dark" :selected-keys="selectedKey" @menu-item-click="onMenuClick">
-        <a-menu-item key="dashboard">概览</a-menu-item>
-        <a-menu-item key="nodes">节点管理</a-menu-item>
-        <a-menu-item key="tasks">任务管理</a-menu-item>
+        <a-menu-item key="dashboard">{{ t('menu.dashboard') }}</a-menu-item>
+        <a-menu-item key="nodes">{{ t('menu.nodes') }}</a-menu-item>
+        <a-menu-item key="tasks">{{ t('menu.tasks') }}</a-menu-item>
+        <a-menu-item key="metering">{{ t('menu.metering') }}</a-menu-item>
+        <a-menu-item key="projects">{{ t('menu.projects') }}</a-menu-item>
       </a-menu>
     </a-layout-sider>
     <a-layout>
       <a-layout-header class="header">
-        <span class="title">算力调度控制台</span>
-        <a-space>
-          <span>{{ username }}</span>
-          <a-button type="text" @click="logout">退出</a-button>
+        <span class="title">{{ t('login.subtitle') }}</span>
+        <a-space :size="16">
+          <locale-theme-switch />
+          <span class="username">{{ username }}</span>
+          <a-button type="text" @click="logout">{{ t('common.logout') }}</a-button>
         </a-space>
       </a-layout-header>
       <a-layout-content class="content">
@@ -68,16 +74,22 @@ function logout() {
   align-items: center;
   justify-content: space-between;
   padding: 0 24px;
-  background: #fff;
-  border-bottom: 1px solid #f0f0f0;
+  /* 用 Arco 变量，暗色模式下 header 同步变深 */
+  background: var(--color-bg-2);
+  border-bottom: 1px solid var(--color-border);
 }
 .title {
   font-size: 16px;
   font-weight: 500;
+  color: var(--color-text-1);
+}
+.username {
+  color: var(--color-text-1);
 }
 .content {
   padding: 24px;
-  background: #f7f8fa;
+  /* 内容区背景跟随主题 */
+  background: var(--color-fill-2);
   overflow: auto;
 }
 </style>

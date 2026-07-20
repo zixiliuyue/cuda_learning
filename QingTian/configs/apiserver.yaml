@@ -1,5 +1,6 @@
 # QingTian API 服务配置示例
 log_level: info
+edition: enterprise
 
 server:
   addr: ":8080"

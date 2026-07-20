@@ -55,6 +55,13 @@ func main() {
 	}
 	defer infra.Close(ctx)
 
+	// 创建数据库索引（如 users.username 唯一）。
+	// 失败不阻断启动：常见原因是历史重复数据导致唯一索引建立失败，
+	// 仅告警提示，避免因脏数据无法启动；服务层已有查重兜底。
+	if err := infra.Store.EnsureIndexes(ctx); err != nil {
+		log.Error("创建数据库索引失败（可能存在重复用户名，请清理后重启）", "error", err)
+	}
+
 	// 组装依赖。
 	tokens := auth.NewTokenManager(cfg.Auth.JWTSecret, cfg.Auth.TokenTTL)
 	resLedger := ledger.New()
@@ -72,7 +79,8 @@ func main() {
 	}
 
 	userSvc := service.NewUserService(infra.Store.Users(), tokens)
-	nodeSvc := service.NewNodeService(infra.Store.Nodes(), infra.Cache, resLedger, cfg.Scheduler.NodeTimeout)
+	nodeSvc := service.NewNodeService(infra.Store.Nodes(), infra.Cache, resLedger, cfg.Scheduler.NodeTimeout).
+		WithIdleConfig(cfg.Scheduler.IdleThresholdUtil, cfg.Scheduler.IdleThresholdDuration)
 	tracer := tracing.NewTracer(tracing.NewSlogExporter(log))
 	taskSvc := service.NewTaskService(infra.Store.Tasks(), infra.Store.Nodes(), infra.Cache, infra.Producer, sched).
 		WithLogService(logSvc).WithMetering(meteringSvc).WithQuota(quotaSvc).WithTracer(tracer)
@@ -118,11 +126,16 @@ func main() {
 	}()
 	log.Info("API 服务已启动")
 
+	// 启动闲置节点自动回收定时扫描器
+	// 扫描间隔设为 1 分钟，平衡检测及时性与性能开销
+	go nodeSvc.StartIdleScanner(ctx, time.Minute)
+
 	// 等待退出信号。
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Info("正在关闭 API 服务...")
+	nodeSvc.StopIdleScanner()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdownCtx)
