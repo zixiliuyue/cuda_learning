@@ -123,10 +123,11 @@ func buildTaskSvcWithDeps() (*TaskService, *notify.MemoryNotifier, *MeteringServ
 	sched := scheduler.New(ledger.New(), "binpack")
 	notifier := notify.NewMemoryNotifier()
 	metering := NewMeteringService(repository.NewMemoryUsageRepo(), 1)
+	quota := NewQuotaService(repository.NewMemoryQuotaRepo())
 	logs := NewLogService(logstream.NewMemoryStreamer(), storage.NewMemoryStore())
 
 	svc := NewTaskService(taskRepo, nodeRepo, queue, bus, sched).
-		WithMetering(metering).WithNotifier(notifier).WithLogService(logs)
+		WithMetering(metering).WithNotifier(notifier).WithQuota(quota).WithLogService(logs)
 	return svc, notifier, metering, taskRepo
 }
 
@@ -226,14 +227,14 @@ func TestQuotaBlocksSubmit(t *testing.T) {
 	_ = quota.Charge(ctx, "u1", 1)
 
 	_, err := svc.Submit(ctx, "u1", SubmitRequest{
-		Name: "job", Image: "img", Resource: domain.ResourceRequest{GPUCount: 1, MemoryMB: 1024},
+		Name: "job", Image: "img", GPUCount: 1, MemoryMB: 1024,
 	})
 	if err == nil {
 		t.Error("配额耗尽时提交应被拒绝")
 	}
 }
 
-// TestScheduleBatch 验证批量调度一次处理多个任务。
+// TestScheduleBatch 验证批量调度处理队列中所有任务。
 func TestScheduleBatch(t *testing.T) {
 	nodeRepo := repository.NewMemoryNodeRepo()
 	taskRepo := repository.NewMemoryTaskRepo()
@@ -251,21 +252,24 @@ func TestScheduleBatch(t *testing.T) {
 			{UUID: "g0", Model: "A100", MemoryTotal: 40960, Allocatable: true},
 		},
 	})
-	taskSvc := NewTaskService(taskRepo, nodeRepo, queue, bus, sched)
+	taskSvc := NewTaskService(taskRepo, nodeRepo, queue, bus, sched).WithNodeService(nodeSvc)
 
 	// 提交 3 个显存共享任务。
 	for i := 0; i < 3; i++ {
 		_, _ = taskSvc.Submit(ctx, "u1", SubmitRequest{
-			Name: "job", Image: "img",
-			Resource: domain.ResourceRequest{GPUCount: 1, MemoryMB: 8000, ShareMode: domain.ShareMemory},
+			Name: "job", Image: "img", GPUCount: 1, MemoryMB: 8000, ShareMode: domain.ShareMemory,
 		})
 	}
-	n, err := taskSvc.ScheduleBatch(ctx, 5)
+	// 处理队列中所有任务，现在 ScheduleBatch 不返回处理数量
+	taskSvc.ScheduleBatch(ctx)
+
+	// 检查所有任务都已被调度
+	pending, err := taskRepo.List(ctx, domain.TaskPending)
 	if err != nil {
-		t.Fatalf("批量调度应成功: %v", err)
+		t.Fatalf("列表查询失败: %v", err)
 	}
-	if n != 3 {
-		t.Errorf("应批量处理 3 个任务，实际 %d", n)
+	if len(pending) != 0 {
+		t.Errorf("应处理完所有 3 个任务，剩余 %d 个仍在 pending", len(pending))
 	}
 }
 

@@ -91,16 +91,34 @@ func (c *MemoryCache) Keys(_ context.Context, prefix string) ([]string, error) {
 }
 
 // SetCAS 实现 Cache.SetCAS，原子 compare-and-swap。
+//
+// 语义：
+//   - 如果 key 不存在且 oldVal == "" → CAS 成功，创建新条目
+//   - 如果 key 存在且当前值 == oldVal → CAS 成功，更新值
+//   - 否则 → CAS 失败
 func (c *MemoryCache) SetCAS(_ context.Context, key, oldVal, newVal string, ttl time.Duration) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	e, ok := c.data[key]
 	if !ok || e.expired(c.now()) {
+		// key 不存在或已过期，只有当 oldVal 为空时才允许创建
+		if oldVal == "" {
+			e = entry{value: newVal}
+			if ttl > 0 {
+				e.expiresAt = c.now().Add(ttl)
+			}
+			c.data[key] = e
+			return true, nil
+		}
 		return false, nil
 	}
+
 	if e.value != oldVal {
 		return false, nil
 	}
+
+	// 匹配成功，更新值
 	e.value = newVal
 	if ttl > 0 {
 		e.expiresAt = c.now().Add(ttl)

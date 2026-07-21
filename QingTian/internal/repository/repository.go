@@ -48,6 +48,9 @@ type TaskRepository interface {
 	List(ctx context.Context, status domain.TaskStatus) ([]*domain.Task, error)
 	// ListByOwner 返回指定用户的任务列表。
 	ListByOwner(ctx context.Context, owner string) ([]*domain.Task, error)
+	// ListByNode 返回指定节点上处于指定状态的任务列表。
+	// 用于节点离线故障时，找出未完成任务重新排队。
+	ListByNode(ctx context.Context, nodeID string, statuses ...domain.TaskStatus) ([]*domain.Task, error)
 	// CountActive 统计某主体当前处于活动态（scheduled/running）的任务数，用于并发配额校验。
 	// projectID 非空时按项目统计，否则按 owner 统计。
 	CountActive(ctx context.Context, owner, projectID string) (int, error)
@@ -83,4 +86,20 @@ type ProjectRepository interface {
 	Update(ctx context.Context, p *domain.Project) error
 	// ListByMember 返回某用户所属的全部项目。
 	ListByMember(ctx context.Context, userID string) ([]*domain.Project, error)
+}
+
+// TaskTemplateRepository 定义任务模板持久化能力。
+type TaskTemplateRepository interface {
+	// Create 创建模板。
+	Create(ctx context.Context, t *domain.TaskTemplate) error
+	// GetByID 按 ID 查询模板，不存在时返回 CodeNotFound。
+	GetByID(ctx context.Context, id string) (*domain.TaskTemplate, error)
+	// Update 更新模板。
+	Update(ctx context.Context, t *domain.TaskTemplate) error
+	// Delete 删除模板。
+	Delete(ctx context.Context, id string) error
+	// ListByOwner 返回指定用户的所有模板。
+	ListByOwner(ctx context.Context, ownerID string) ([]*domain.TaskTemplate, error)
+	// ListByProject 返回指定项目的所有模板。
+	ListByProject(ctx context.Context, projectID string) ([]*domain.TaskTemplate, error)
 }

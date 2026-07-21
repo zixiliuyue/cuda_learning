@@ -271,6 +271,30 @@ func (r *MongoTaskRepo) CountActive(ctx context.Context, owner, projectID string
 	return int(n), nil
 }
 
+// ListByNode 实现 TaskRepository.ListByNode。
+// 查询指定节点上处于指定状态的所有任务，用于节点离线故障自动重调度。
+func (r *MongoTaskRepo) ListByNode(ctx context.Context, nodeID string, statuses ...domain.TaskStatus) ([]*domain.Task, error) {
+	filter := bson.M{"node_id": nodeID}
+	if len(statuses) > 0 {
+		// 转换为 bson.A 用于 $in 查询
+		inQuery := make(bson.A, len(statuses))
+		for i, s := range statuses {
+			inQuery[i] = s
+		}
+		filter["status"] = bson.M{"$in": inQuery}
+	}
+	cur, err := r.col.Find(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []*domain.Task
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MongoUsageRepo 是 UsageRepository 的 MongoDB 实现。
 type MongoUsageRepo struct{ col *mongo.Collection }
 
@@ -384,6 +408,88 @@ func (r *MongoProjectRepo) ListByMember(ctx context.Context, userID string) ([]*
 	}
 	defer cur.Close(ctx)
 	var out []*domain.Project
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// MongoTaskTemplateRepo 是 TaskTemplateRepository 的 MongoDB 实现。
+type MongoTaskTemplateRepo struct{ col *mongo.Collection }
+
+// NewMongoTaskTemplateRepo 创建 MongoDB 任务模板仓储。
+func NewMongoTaskTemplateRepo(col *mongo.Collection) *MongoTaskTemplateRepo {
+	return &MongoTaskTemplateRepo{col: col}
+}
+
+// Create 实现 TaskTemplateRepository.Create。
+func (r *MongoTaskTemplateRepo) Create(ctx context.Context, t *domain.TaskTemplate) error {
+	_, err := r.col.InsertOne(ctx, t)
+	if mongo.IsDuplicateKeyError(err) {
+		return apperr.Conflict("模板已存在: " + t.ID)
+	}
+	return err
+}
+
+// GetByID 实现 TaskTemplateRepository.GetByID。
+func (r *MongoTaskTemplateRepo) GetByID(ctx context.Context, id string) (*domain.TaskTemplate, error) {
+	var t domain.TaskTemplate
+	err := r.col.FindOne(ctx, bson.M{"_id": id}).Decode(&t)
+	if err == mongo.ErrNoDocuments {
+		return nil, apperr.NotFound("模板不存在: " + id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// Update 实现 TaskTemplateRepository.Update。
+func (r *MongoTaskTemplateRepo) Update(ctx context.Context, t *domain.TaskTemplate) error {
+	res, err := r.col.ReplaceOne(ctx, bson.M{"_id": t.ID}, t)
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return apperr.NotFound("模板不存在: " + t.ID)
+	}
+	return nil
+}
+
+// Delete 实现 TaskTemplateRepository.Delete。
+func (r *MongoTaskTemplateRepo) Delete(ctx context.Context, id string) error {
+	res, err := r.col.DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return apperr.NotFound("模板不存在: " + id)
+	}
+	return nil
+}
+
+// ListByOwner 实现 TaskTemplateRepository.ListByOwner。
+func (r *MongoTaskTemplateRepo) ListByOwner(ctx context.Context, ownerID string) ([]*domain.TaskTemplate, error) {
+	cur, err := r.col.Find(ctx, bson.M{"owner_id": ownerID})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []*domain.TaskTemplate
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListByProject 实现 TaskTemplateRepository.ListByProject。
+func (r *MongoTaskTemplateRepo) ListByProject(ctx context.Context, projectID string) ([]*domain.TaskTemplate, error) {
+	cur, err := r.col.Find(ctx, bson.M{"project_id": projectID})
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var out []*domain.TaskTemplate
 	if err := cur.All(ctx, &out); err != nil {
 		return nil, err
 	}

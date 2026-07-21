@@ -26,24 +26,25 @@ type RedisConfig struct {
 
 // NSQConfig 描述 NSQ 连接配置。
 type NSQConfig struct {
-	NSQDAddr    string `yaml:"nsqd_addr"`     // 生产者连接的 nsqd 地址，例如 localhost:4150
-	LookupdAddr string `yaml:"lookupd_addr"`  // 消费者发现用的 nsqlookupd 地址，例如 localhost:4161
+	NSQDAddr    string `yaml:"nsqd_addr"`    // 生产者连接的 nsqd 地址，例如 localhost:4150
+	LookupdAddr string `yaml:"lookupd_addr"` // 消费者发现用的 nsqlookupd 地址，例如 localhost:4161
 	MaxInFlight int    `yaml:"max_in_flight"` // 消费者最大并发处理消息数
 }
 
 // MinIOConfig 描述 MinIO 对象存储配置。
 type MinIOConfig struct {
-	Endpoint  string `yaml:"endpoint"`   // 服务地址，例如 localhost:9000
-	AccessKey string `yaml:"access_key"` // 访问密钥
-	SecretKey string `yaml:"secret_key"` // 密钥
-	UseSSL    bool   `yaml:"use_ssl"`    // 是否启用 HTTPS
-	Bucket    string `yaml:"bucket"`     // 默认存储桶
+	Endpoint  string `yaml:"endpoint"`  // 服务地址，例如 localhost:9000
+	AccessKey string `yaml:"access_key"`  // 访问密钥
+	SecretKey string `yaml:"secret_key"`  // 密钥
+	Bucket  string `yaml:"bucket"`    // 默认存储桶
+	UseSSL  bool   `yaml:"use_ssl"`    // 是否启用 HTTPS
 }
 
 // AuthConfig 描述认证相关配置。
 type AuthConfig struct {
-	JWTSecret string        `yaml:"jwt_secret"` // JWT 签名密钥，生产环境务必使用强随机值
-	TokenTTL  time.Duration `yaml:"token_ttl"`  // 令牌有效期
+	JWTSecret         string        `yaml:"jwt_secret"`         // JWT 签名密钥，生产环境务必使用强随机值
+	AccessTokenTTL  time.Duration `yaml:"access_token_ttl"`  // 访问令牌有效期
+	RefreshTokenTTL time.Duration `yaml:"refresh_token_ttl"` // 刷新令牌有效期
 }
 
 // ServerConfig 描述 HTTP 服务监听配置。
@@ -53,12 +54,11 @@ type ServerConfig struct {
 
 // SchedulerConfig 描述调度器行为配置。
 type SchedulerConfig struct {
-	Interval    time.Duration `yaml:"interval"`     // 调度轮询间隔
-	Strategy    string        `yaml:"strategy"`     // 调度策略：binpack / spread
-	NodeTimeout time.Duration `yaml:"node_timeout"` // 节点心跳超时时间，超时判离线
-	// 闲置资源自动回收配置
-	IdleThresholdUtil     int           `yaml:"idle_threshold_util"`      // 利用率阈值（百分比），低于此值认为空闲
-	IdleThresholdDuration time.Duration `yaml:"idle_threshold_duration"`  // 持续空闲多久才触发自动回收
+	Interval             time.Duration     `yaml:"interval"`             // 调度轮询间隔
+	Strategy             string          `yaml:"strategy"`           // 调度策略：binpack / spread
+	NodeTimeout          time.Duration     `yaml:"node_timeout"`        // 节点心跳超时，超时判离线
+	IdleThresholdUtil    int             `yaml:"idle_threshold_util"`    // 利用率阈值（百分比），低于此值认为空闲
+	IdleThresholdDuration time.Duration `yaml:"idle_threshold_duration"` // 持续空闲多久才触发自动回收
 }
 
 // AgentConfig 描述 Agent 配置。
@@ -73,18 +73,18 @@ type AgentConfig struct {
 //
 // 不同服务只会用到其中一部分字段，共用同一结构可简化配置文件管理。
 type Config struct {
-	LogLevel  string          `yaml:"log_level"`
-	Edition   string          `yaml:"edition"` // 功能版本：community / enterprise
-	Server    ServerConfig    `yaml:"server"`
-	Mongo     MongoConfig     `yaml:"mongo"`
-	Redis     RedisConfig     `yaml:"redis"`
-	NSQ       NSQConfig       `yaml:"nsq"`
-	MinIO     MinIOConfig     `yaml:"minio"`
-	Auth      AuthConfig      `yaml:"auth"`
+	LogLevel   string          `yaml:"log_level"`
+	Edition  string          `yaml:"edition"`
+	Server   ServerConfig    `yaml:"server"`
+	Mongo    MongoConfig    `yaml:"mongo"`
+	Redis    RedisConfig    `yaml:"redis"`
+	NSQ       NSQConfig     `yaml:"nsq"`
+	MinIO     MinIOConfig    `yaml:"minio"`
+	Auth     AuthConfig    `yaml:"auth"`
 	Scheduler SchedulerConfig `yaml:"scheduler"`
-	Agent     AgentConfig     `yaml:"agent"`
-	Metering  MeteringConfig  `yaml:"metering"`
-	Notify    NotifyConfig    `yaml:"notify"`
+	Agent    AgentConfig    `yaml:"agent"`
+	Metering MeteringConfig  `yaml:"metering"`
+	Notify   NotifyConfig    `yaml:"notify"`
 }
 
 // MeteringConfig 描述计量与计费配置。
@@ -94,21 +94,20 @@ type MeteringConfig struct {
 
 // NotifyConfig 描述任务通知配置。
 type NotifyConfig struct {
-	Platform   string `yaml:"platform"`    // 渠道：feishu / wecom
+	Platform   string `yaml:"platform"`   // 渠道：feishu / wecom
 	WebhookURL string `yaml:"webhook_url"` // 群机器人 Webhook 地址
 }
 
 // Load 从指定 YAML 文件加载配置，并应用默认值与环境变量覆盖。
 //
 // 参数：
-//   - path: 配置文件路径。
+//
+//	path: 配置文件路径。
 //
 // 返回值：
-//   - *Config: 解析后的配置。
-//   - error:   文件读取或解析失败时返回。
 //
-// 环境变量覆盖规则（存在时优先）：
-//   - QT_MONGO_URI、QT_REDIS_ADDR、QT_NSQD_ADDR、QT_MINIO_ENDPOINT、QT_JWT_SECRET。
+//	- *Config: 解析后的配置。
+//	- error:  loading 错误时返回。
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -129,23 +128,30 @@ func Default() *Config {
 		Edition:  "community",
 		Server:   ServerConfig{Addr: ":8080"},
 		Mongo:    MongoConfig{URI: "mongodb://localhost:27017", Database: "qingtian"},
-		Redis:    RedisConfig{Addr: "localhost:6379", DB: 0},
+		Redis:    RedisConfig{Addr: "localhost:6379", Password: "", DB: 0},
 		NSQ:      NSQConfig{NSQDAddr: "localhost:4150", LookupdAddr: "localhost:4161", MaxInFlight: 16},
-		MinIO:    MinIOConfig{Endpoint: "localhost:9000", AccessKey: "minioadmin", SecretKey: "minioadmin", Bucket: "qingtian"},
-		Auth:     AuthConfig{JWTSecret: "change-me-in-production", TokenTTL: 24 * time.Hour},
+		MinIO:     MinIOConfig{Endpoint: "localhost:9000", AccessKey: "minioadmin", SecretKey: "minioadmin", Bucket: "qingtian", UseSSL: false},
+		Auth:     AuthConfig{JWTSecret: "change-me-in-production", AccessTokenTTL: 24 * time.Hour, RefreshTokenTTL: 7 * 24 * time.Hour},
 		Scheduler: SchedulerConfig{
 			Interval:             2 * time.Second,
 			Strategy:             "binpack",
 			NodeTimeout:          30 * time.Second,
-			IdleThresholdUtil:    10, // 默认利用率低于 10% 认为空闲
-			IdleThresholdDuration: 30 * time.Minute, // 持续空闲 30 分钟才触发回收
+			IdleThresholdUtil:    10,
+			IdleThresholdDuration: 30 * time.Minute,
 		},
 		Agent: AgentConfig{
+			NodeName:          "",
+			ControlPlaneURL:   "",
 			HeartbeatInterval: 5 * time.Second,
 			WorkDir:           "./agent-work",
 		},
-		Metering: MeteringConfig{PricePerGPUHour: 1.0},
-		Notify:   NotifyConfig{Platform: "feishu"},
+		Metering: MeteringConfig{
+			PricePerGPUHour: 1.0,
+		},
+		Notify:   NotifyConfig{
+			Platform: "feishu",
+			WebhookURL: "",
+		},
 	}
 }
 
@@ -168,6 +174,18 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("QT_JWT_SECRET"); v != "" {
 		cfg.Auth.JWTSecret = v
+	}
+	if v := os.Getenv("QT_ACCESS_TOKEN_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err == nil {
+			cfg.Auth.AccessTokenTTL = d
+		}
+	}
+	if v := os.Getenv("QT_REFRESH_TOKEN_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err == nil {
+			cfg.Auth.RefreshTokenTTL = d
+		}
 	}
 	if v := os.Getenv("QT_CONTROL_PLANE_URL"); v != "" {
 		cfg.Agent.ControlPlaneURL = v

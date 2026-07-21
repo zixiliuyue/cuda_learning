@@ -17,13 +17,13 @@ import (
 )
 
 // jsonMarshal 是测试用的 JSON 序列化辅助函数。
-func jsonMarshal(v interface{}) []byte {
+func jsonMarshal(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
 }
 
 // jsonUnmarshal 是测试用的 JSON 反序列化辅助函数。
-func jsonUnmarshal(b []byte, v interface{}) error {
+func jsonUnmarshal(b []byte, v any) error {
 	return json.Unmarshal(b, v)
 }
 
@@ -170,7 +170,8 @@ func TestClosedLoop(t *testing.T) {
 		Name:     "train-job",
 		Image:    "cuda:13.1",
 		Command:  "echo hello",
-		Resource: domain.ResourceRequest{GPUCount: 1, MemoryMB: 8192},
+		GPUCount: 1,
+		MemoryMB: 8192,
 		Priority: 5,
 	})
 	if err != nil {
@@ -213,7 +214,7 @@ func TestScheduleNoNodeRequeues(t *testing.T) {
 	taskSvc := NewTaskService(taskRepo, nodeRepo, queue, bus, sched)
 
 	task, _ := taskSvc.Submit(ctx, "u1", SubmitRequest{
-		Name: "job", Image: "img", Resource: domain.ResourceRequest{GPUCount: 1, MemoryMB: 1024},
+		Name: "job", Image: "img", GPUCount: 1, MemoryMB: 1024,
 	})
 	_, _ = taskSvc.ScheduleOnce(ctx)
 
@@ -236,7 +237,7 @@ func TestCancelTask(t *testing.T) {
 	taskSvc := NewTaskService(taskRepo, repository.NewMemoryNodeRepo(), queue, bus, sched)
 
 	task, _ := taskSvc.Submit(ctx, "u1", SubmitRequest{
-		Name: "job", Image: "img", Resource: domain.ResourceRequest{GPUCount: 1, MemoryMB: 1024},
+		Name: "job", Image: "img", GPUCount: 1, MemoryMB: 1024,
 	})
 	if err := taskSvc.Cancel(ctx, task.ID); err != nil {
 		t.Fatalf("取消应成功: %v", err)

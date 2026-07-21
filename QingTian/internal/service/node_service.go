@@ -60,11 +60,13 @@ func (s *NodeService) WithIdleConfig(utilThreshold int, durationThreshold time.D
 
 // RegisterRequest 是节点注册请求。
 type RegisterRequest struct {
-	Hostname      string       `json:"hostname"`
-	IP            string       `json:"ip"`
-	GPUs          []domain.GPU `json:"gpus"`
-	DriverVersion string       `json:"driver_version"`
-	CUDAVersion   string       `json:"cuda_version"`
+	Hostname      string            `json:"hostname"`
+	IP            string            `json:"ip"`
+	GPUs          []domain.GPU       `json:"gpus"`
+	DriverVersion string            `json:"driver_version"`
+	CUDAVersion   string            `json:"cuda_version"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	Taints        []domain.Taint    `json:"taints,omitempty"`
 }
 
 // Register 注册（或重新注册）一个节点。
@@ -92,6 +94,8 @@ func (s *NodeService) Register(ctx context.Context, req RegisterRequest) (*domai
 		GPUs:          req.GPUs,
 		DriverVersion: req.DriverVersion,
 		CUDAVersion:   req.CUDAVersion,
+		Labels:        req.Labels,
+		Taints:        req.Taints,
 		LastHeartbeat: now,
 		RegisteredAt:  now,
 	}

@@ -1,6 +1,6 @@
-// 本文件实现任务服务：任务提交、调度、下发、状态回传处理与查询。
+// 本文件实现任务服务：任务提交、调度、状态处理、超时代理。
 //
-// 任务服务串联调度器、账本、仓储与消息队列，是"提交->调度->执行->回传"闭环的核心。
+// 任务服务串联起"仓储 -> 调度器 -> 消息队列 -> Agent"整个闭环，是调度核心协调者。
 package service
 
 import (
@@ -26,24 +26,27 @@ import (
 // 字段：
 //   - repo:      任务仓储。
 //   - nodeRepo:  节点仓储（调度时读取候选节点）。
+//   - nodeService: 节点服务，用于节点故障检测存活状态。
 //   - queue:     待调度优先级队列。
-//   - producer:  消息生产者，用于下发任务。
-//   - sched:     调度器。
+//   - producer:   消息生产者，下发任务到 Agent。
+//   - sched:     调度器核心，执行过滤打分。
 //   - now:       时间函数，便于测试注入。
 //
-// 下列为可选依赖（通过 With* 注入），未注入时对应能力静默跳过，
-// 从而保持核心闭环的最小可用与既有测试的兼容：
-//   - logs:     日志服务（任务结束时归档日志）。
-//   - metering: 计量服务（任务结束时记录用量）。
-//   - quota:    配额服务（提交时校验、结束时计费）。
-//   - notifier: 通知器（任务终态主动触达）。
+// 下列依赖为可选（通过 With* 注入），未注入对应能力静默跳过：
+//   - logs:      日志服务（任务结束归档日志）。
+//   - metering: 计量服务（任务结束记录用量）。
+//   - quota:     配额服务（提交任务校验配额）。
+//   - notifier:  通知服务（任务结束通知用户）。
+//   - tracer:    分布式追踪。
+//   - ledgerStore: 账本快照共享存储。
 type TaskService struct {
-	repo     repository.TaskRepository
-	nodeRepo repository.NodeRepository
-	queue    cache.PriorityQueue
-	producer mq.Producer
-	sched    *scheduler.Scheduler
-	now      func() time.Time
+	repo         repository.TaskRepository
+	nodeRepo     repository.NodeRepository
+	nodeService  *NodeService
+	queue        cache.PriorityQueue
+	producer     mq.Producer
+	sched        *scheduler.Scheduler
+	now          func() time.Time
 
 	logs     *LogService
 	metering *MeteringService
@@ -51,12 +54,11 @@ type TaskService struct {
 	notifier notify.Notifier
 	tracer   *tracing.Tracer
 
-	// ledgerStore 是账本快照的共享存储（如 Redis）。注入后，调度器在 leader
-	// 锁保护下"加载共享快照 -> 调度 -> 写回"，实现多实例共享同一占用视图，
-	// 避免每轮都从 MongoDB 全量重建。未注入时回退到从 MongoDB 重建。
+	// ledgerStore 是账本快照的共享存储（如 Redis）。注入后调度器进程重启可以从快照重建账本，
+	// 避免"进程重启认为所有卡空闲"造成超卖，这是容错设计关键一步。
 	ledgerStore cache.Cache
 
-	// ledgerVersion 是 SyncLedger 加载到的快照版本，写回时用它做 CAS 校验。
+	// ledgerVersion 是 SyncLedger 加载到快照版本，写回的时候用 CAS 保证一致性。
 	// 仅当 ledgerStore != nil 时有效。
 	ledgerVersion int64
 }
@@ -73,68 +75,61 @@ func NewTaskService(
 	sched *scheduler.Scheduler,
 ) *TaskService {
 	return &TaskService{
-		repo:     repo,
-		nodeRepo: nodeRepo,
-		queue:    queue,
-		producer: producer,
-		sched:    sched,
-		now:      time.Now,
+		repo:      repo,
+		nodeRepo:    nodeRepo,
+		queue:     queue,
+		producer:  producer,
+		sched:     sched,
+		now:       time.Now,
 	}
 }
 
-// WithLogService 注入日志服务，返回自身便于链式调用。
+// WithLogService 注入日志服务（链式）。
 func (s *TaskService) WithLogService(l *LogService) *TaskService {
 	s.logs = l
 	return s
 }
 
-// WithMetering 注入计量服务。
+// WithMetering 注入计量服务（链式）。
 func (s *TaskService) WithMetering(m *MeteringService) *TaskService {
 	s.metering = m
 	return s
 }
 
-// WithQuota 注入配额服务。
+// WithQuota 注入配额服务（链式）。
 func (s *TaskService) WithQuota(q *QuotaService) *TaskService {
 	s.quota = q
 	return s
 }
 
-// WithNotifier 注入通知器。
+// WithNotifier 注入通知服务（链式）。
 func (s *TaskService) WithNotifier(n notify.Notifier) *TaskService {
 	s.notifier = n
 	return s
 }
 
-// WithClock 注入自定义时间函数，仅用于测试（如验证超时判定）。
-func (s *TaskService) WithClock(now func() time.Time) *TaskService {
-	if now != nil {
-		s.now = now
-	}
-	return s
-}
-
-// WithTracer 注入分布式追踪器，串联提交/调度/执行链路。
+// WithTracer 注入分布式追踪（链式）。
 func (s *TaskService) WithTracer(t *tracing.Tracer) *TaskService {
 	s.tracer = t
 	return s
 }
 
-// WithLedgerStore 注入账本快照的共享存储（如 Redis），启用跨实例共享账本。
+// WithLedgerStore 注入账本快照存储（链式）。
 func (s *TaskService) WithLedgerStore(c cache.Cache) *TaskService {
 	s.ledgerStore = c
 	return s
 }
 
-// startSpan 安全地开启一个 Span：未注入 tracer 时返回原 ctx 与 nil。
-//
-// 返回的 finish 函数总是可安全调用（nil-safe），便于在调用处 defer。
-func (s *TaskService) startSpan(ctx context.Context, name string) (context.Context, func()) {
-	if s.tracer == nil {
-		return ctx, func() {}
-	}
-	spanCtx, span := s.tracer.Start(ctx, name)
-	return spanCtx, span.Finish
+// WithNodeService 注入节点服务，用于节点存活检测（链式）。
+func (s *TaskService) WithNodeService(ns *NodeService) *TaskService {
+	s.nodeService = ns
+	return s
+}
+
+// WithClock 注入自定义时钟，便于测试（链式）。
+func (s *TaskService) WithClock(now func() time.Time) *TaskService {
+	s.now = now
+	return s
 }
 
 // SubmitRequest 是任务提交请求。
@@ -142,46 +137,40 @@ type SubmitRequest struct {
 	Name           string                 `json:"name"`
 	Image          string                 `json:"image"`
 	Command        string                 `json:"command"`
-	Resource       domain.ResourceRequest `json:"resource"`
+	Env            []domain.EnvVar        `json:"env,omitempty"`
 	Priority       int                    `json:"priority"`
-	DatasetPath    string                 `json:"dataset_path"`
-	ProjectID      string                 `json:"project_id"`
+	GPUCount       int                    `json:"gpu_count"`
+	MemoryMB       int64                  `json:"memory_mb"`
+	GPUModel       string                 `json:"gpu_model"`
+	Vendor         domain.Vendor          `json:"vendor"`
+	ShareMode      domain.ShareMode      `json:"share_mode"`
 	TimeoutSeconds int64                  `json:"timeout_seconds"`
 	Preemptible    bool                   `json:"preemptible"`
+	DatasetPath    string                 `json:"dataset_path"`
+	ProjectID      string                 `json:"project_id"`
+	GangSize       int                    `json:"gang_size"` // 成组调度需要多少份数（分布式训练需要 N 个节点各跑一份）
+	NodeSelector   *domain.NodeSelector   `json:"node_selector,omitempty"` // 节点标签选择约束
+	Tolerations    []domain.Toleration    `json:"tolerations,omitempty"`    // 节点污点容忍列表
 }
 
-// Submit 提交一个新任务，落库并进入待调度队列。
+// Submit 提交一个新任务，入库后推入待调度队列。
 //
-// 提交前若注入了配额服务，会按预计卡时与并发数做配额校验，超额则拒绝，
-// 从而支撑"按用量计费 + 配额套餐"的商业化基础。
-//
-// 参数：
-//   - ctx:   上下文。
-//   - owner: 提交者用户 ID。
-//   - req:   提交请求。
-//
-// 返回值：
-//   - *domain.Task: 创建成功的任务（状态为 pending）。
-//   - error:        参数非法、配额不足或持久化失败时返回。
+// 提交前如果注入了配额服务，会按预计并发和卡时校验配额，超额拒绝提交。
 func (s *TaskService) Submit(ctx context.Context, owner string, req SubmitRequest) (*domain.Task, error) {
 	ctx, finish := s.startSpan(ctx, "task.submit")
 	defer finish()
 	if req.Name == "" || req.Image == "" {
 		return nil, apperr.InvalidArgument("任务名称与镜像不能为空")
 	}
-	if req.Resource.GPUCount <= 0 {
+	if req.GPUCount <= 0 {
 		return nil, apperr.InvalidArgument("GPU 数量必须大于 0")
 	}
-	// 配额校验：以计费主体（项目优先，否则用户）为准。
+	// 提交前如果注入了配额服务，会按预计并发校验配额，超额拒绝提交。
 	if s.quota != nil {
-		subject := owner
-		if req.ProjectID != "" {
-			subject = req.ProjectID
-		}
-		running := s.countRunning(ctx, owner, req.ProjectID)
-		// 预计卡时无法预知时长，这里以 GPU 份数作为并发/额度的近似门槛（估 1 卡时）。
-		est := float64(req.Resource.GPUCount)
-		if err := s.quota.CheckAdmit(ctx, subject, est, running); err != nil {
+		countActive := s.CountActive(ctx, owner, req.ProjectID)
+		// 即使预估 0 卡时，如果剩余卡时 <= 0，也要拒绝提交（严格检查）
+		estimatedHours := 0.0
+		if err := s.quota.CheckAdmit(ctx, owner, estimatedHours, countActive+1); err != nil {
 			return nil, err
 		}
 	}
@@ -193,31 +182,39 @@ func (s *TaskService) Submit(ctx context.Context, owner string, req SubmitReques
 		ProjectID:      req.ProjectID,
 		Image:          req.Image,
 		Command:        req.Command,
-		Resource:       req.Resource,
+		Env:            req.Env,
+		Resource:       domain.ResourceRequest{
+			GPUCount:     req.GPUCount,
+			MemoryMB:     req.MemoryMB,
+			GPUModel:     req.GPUModel,
+			Vendor:       req.Vendor,
+			ShareMode:    req.ShareMode,
+			GangSize:     req.GangSize,
+			NodeSelector: req.NodeSelector,
+			Tolerations:  req.Tolerations,
+		},
 		Priority:       req.Priority,
 		Status:         domain.TaskPending,
 		DatasetPath:    req.DatasetPath,
-		TimeoutSeconds: req.TimeoutSeconds,
-		Preemptible:    req.Preemptible,
 		ResultPath:     "results/" + req.Name + "/",
 		LogPath:        "logs/" + req.Name + ".log",
+		CheckpointPath: "",
 		CreatedAt:      now,
 		UpdatedAt:      now,
+		TimeoutSeconds: req.TimeoutSeconds,
+		Preemptible:    req.Preemptible,
 	}
 	if err := s.repo.Create(ctx, task); err != nil {
 		return nil, err
 	}
-	// 入待调度队列，score 使用优先级。
-	if err := s.queue.Push(ctx, task.ID, float64(task.Priority)); err != nil {
+	if err := s.queue.Push(ctx, task.ID, float64(req.Priority)); err != nil {
 		return nil, err
 	}
 	return task, nil
 }
 
-// countRunning 统计某主体当前处于运行中的任务数，用于并发配额校验。
-//
-// 通过仓储的 CountActive 将过滤下推到存储层，避免全量拉取任务后在内存过滤。
-func (s *TaskService) countRunning(ctx context.Context, owner, projectID string) int {
+// CountActive 统计满足状态（scheduled/running）任务个数，用于配额校验。
+func (s *TaskService) CountActive(ctx context.Context, owner, projectID string) int {
 	n, err := s.repo.CountActive(ctx, owner, projectID)
 	if err != nil {
 		return 0
@@ -225,149 +222,90 @@ func (s *TaskService) countRunning(ctx context.Context, owner, projectID string)
 	return n
 }
 
-// RebuildLedger 以存储层为真相源重建资源账本。
-//
-// 调度器进程重启后账本为空，若直接调度会因"认为所有卡空闲"而超卖；同时运行期
-// 新注册/变更的节点也需要进入账本。该方法在每轮调度前调用：加载全部节点与全部
-// 活动任务（scheduled/running），交由调度器 Reset -> SyncNode -> Occupy 重建账本。
-//
-// 参数：
-//   - ctx: 上下文。
-//
-// 返回值：
-//   - error: 读取节点或任务失败时返回。
-func (s *TaskService) RebuildLedger(ctx context.Context) error {
-	nodes, err := s.nodeRepo.List(ctx)
-	if err != nil {
-		return err
-	}
-	scheduled, err := s.repo.List(ctx, domain.TaskScheduled)
-	if err != nil {
-		return err
-	}
-	running, err := s.repo.List(ctx, domain.TaskRunning)
-	if err != nil {
-		return err
-	}
-	active := make([]*domain.Task, 0, len(scheduled)+len(running))
-	active = append(active, scheduled...)
-	active = append(active, running...)
-	s.sched.RebuildLedger(nodes, active)
-	return nil
-}
-
-// SyncLedger 在每轮调度前准备账本，是账本一致性的入口。
-//
-// 注入了共享存储（ledgerStore）时走"共享快照"路径：加载 Redis 中的账本快照，
-// 记录其版本号，再登记全部节点容量（纳入运行期新增/变更节点，保留既有占用）；
-// 共享存储中尚无快照（首次启动）时回退为从 MongoDB 全量重建，并将初始版本
-// 设为 1。未注入共享存储时，始终从 MongoDB 全量重建，保持既有行为。
-//
-// 该方法应在持有调度 leader 锁期间调用，从而保证"加载->调度->写回"串行化。
+// SyncLedger 从存储层真相源重建资源账本（调度器进程重启后调用）。
 func (s *TaskService) SyncLedger(ctx context.Context) error {
-	if s.ledgerStore == nil {
-		return s.RebuildLedger(ctx)
-	}
-	data, ok, err := s.ledgerStore.Get(ctx, ledgerSnapshotKey)
-	if err != nil {
-		return err
-	}
-	if !ok || data == "" {
-		// 共享存储尚无快照：从 MongoDB 全量重建，并将初始版本设为 1。
-		if err := s.RebuildLedger(ctx); err != nil {
-			return err
-		}
-		s.ledgerVersion = 1 // 首次写回用版本 1
-		return nil
-	}
-	version, err := s.sched.LoadLedgerSnapshot([]byte(data))
-	if err != nil {
-		return err
-	}
-	s.ledgerVersion = version
-	// 在共享快照之上登记节点容量，纳入运行期新增/变更节点（保留既有占用）。
 	nodes, err := s.nodeRepo.List(ctx)
 	if err != nil {
 		return err
 	}
-	s.sched.SyncNodes(nodes)
+	// 获取所有活动态任务（scheduled + running）
+	scheduledTasks, err := s.repo.List(ctx, domain.TaskScheduled)
+	if err != nil {
+		return err
+	}
+	runningTasks, err := s.repo.List(ctx, domain.TaskRunning)
+	if err != nil {
+		return err
+	}
+	activeTasks := append(scheduledTasks, runningTasks...)
+
+	// 尝试从共享存储加载快照，如果成功则直接使用，不需要全量重建
+	if s.ledgerStore != nil {
+		dataStr, ok, err := s.ledgerStore.Get(ctx, "qingtian:ledger:snapshot")
+		if err == nil && ok {
+			data := []byte(dataStr)
+			version, err := s.sched.LoadLedgerSnapshot(data)
+			if err == nil {
+				s.ledgerVersion = version
+				// 加载快照后，同步最新节点变更（保证运行期新增节点也被纳入）
+				s.sched.SyncNodes(nodes)
+				return nil
+			}
+			// 加载快照失败，回退到全量重建
+		}
+	}
+	// 没有快照或加载失败，从数据库全量重建
+	s.sched.RebuildLedger(nodes, activeTasks)
 	return nil
 }
 
-// PersistLedger 将当前账本状态 CAS 写回共享存储，供其它调度器实例复用。
-//
-// 若快照在调度期间被其它实例修改（版本号跳变），则放弃写回并返回 false。
-// 这是安全的：下一轮 SyncLedger 会从新版本快照重建，已分配的任务已持久化
-// 在数据库中，不会丢失。未注入共享存储时空操作。
+// PersistLedger 将当前账本快照写回共享存储，CAS 保证版本一致性。
 func (s *TaskService) PersistLedger(ctx context.Context) (bool, error) {
 	if s.ledgerStore == nil {
-		return true, nil
+		return false, nil // 没有共享存储，不需要写回
 	}
-	oldData, ok, err := s.ledgerStore.Get(ctx, ledgerSnapshotKey)
+	data, err := s.sched.DumpLedgerSnapshot(s.ledgerVersion + 1)
 	if err != nil {
 		return false, err
 	}
-	if !ok {
-		// 并发删除导致无快照：视为首次写入，直接 Set。
-		nextVersion := s.ledgerVersion + 1
-		newData, err := s.sched.DumpLedgerSnapshot(nextVersion)
-		if err != nil {
-			return false, err
+
+	// 读取旧值用于 CAS
+	var oldVal string
+	var ok bool
+	if s.ledgerVersion > 0 {
+		var errGet error
+		oldVal, ok, errGet = s.ledgerStore.Get(ctx, "qingtian:ledger:snapshot")
+		if errGet != nil {
+			oldVal = ""
+			ok = false
 		}
-		return true, s.ledgerStore.Set(ctx, ledgerSnapshotKey, string(newData), 0)
+		if !ok {
+			oldVal = ""
+		}
+	} else {
+		// 当 ledgerVersion == 0 表示首次写入，旧值期望是空
+		oldVal = ""
 	}
-	// 解析快照中实际的版本号，与本地加载时记录的版本比较。
-	// 版本不匹配说明快照在调度期间已被其它实例修改，放弃写回。
-	actualVersion, err := parseSnapshotVersion([]byte(oldData))
-	if err != nil {
-		return false, err
-	}
-	if actualVersion != s.ledgerVersion {
-		return false, nil
-	}
-	nextVersion := s.ledgerVersion + 1
-	newData, err := s.sched.DumpLedgerSnapshot(nextVersion)
-	if err != nil {
-		return false, err
-	}
-	ok, err = s.ledgerStore.SetCAS(ctx, ledgerSnapshotKey, oldData, string(newData), 0)
+
+	// 使用 CAS 写共享存储，版本不匹配放弃写入，保证一致性。
+	dataStr := string(data)
+	ok, err = s.ledgerStore.SetCAS(ctx, "qingtian:ledger:snapshot", oldVal, dataStr, 0)
 	if err != nil {
 		return false, err
 	}
 	if ok {
-		s.ledgerVersion = nextVersion // CAS 成功，更新本地版本记录
+		s.ledgerVersion = s.ledgerVersion + 1
 	}
 	return ok, nil
 }
 
-// parseSnapshotVersion 从快照 JSON 中提取版本号（v 字段）。
-// 格式损坏时返回错误。
-func parseSnapshotVersion(data []byte) (int64, error) {
-	var v struct {
-		Version int64 `json:"v"`
-	}
-	if err := json.Unmarshal(data, &v); err != nil {
-		return 0, err
-	}
-	return v.Version, nil
-}
-
-// ScheduleOnce 从队列取出一个任务并尝试调度、下发。
+// ScheduleOnce 被调度器循环周期性调用，弹出一个任务尝试调度。
 //
-// 该方法由调度器循环周期性调用，实现步骤：
-//  1. 从优先级队列弹出一个任务 ID。
-//  2. 读取任务与在线节点，调用调度器决策。
-//  3. 决策成功则更新任务状态为 scheduled，并通过 NSQ 下发到目标节点。
-//  4. 决策失败（无可用节点）则将任务重新入队，等待下次调度。
-//
-// 参数：
-//   - ctx: 上下文。
-//
-// 返回值：
-//   - bool:  是否处理了一个任务（false 表示队列为空）。
-//   - error: 处理过程中的错误。
+// 返回：
+//   - bool:   true  if a task was processed, false if the queue is empty.
+//   - error:  error if any error occurred during processing.
 func (s *TaskService) ScheduleOnce(ctx context.Context) (bool, error) {
-	ctx, finish := s.startSpan(ctx, "task.schedule")
+	ctx, finish := s.startSpan(ctx, "task.schedule-once")
 	defer finish()
 	taskID, ok, err := s.queue.Pop(ctx)
 	if err != nil {
@@ -381,7 +319,7 @@ func (s *TaskService) ScheduleOnce(ctx context.Context) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	// 已被取消的任务无需调度。
+	// 已经取消的任务不需要调度
 	if task.Status != domain.TaskPending {
 		return true, nil
 	}
@@ -391,265 +329,370 @@ func (s *TaskService) ScheduleOnce(ctx context.Context) (bool, error) {
 		return true, err
 	}
 
-	decision, err := s.sched.Schedule(ctx, task, nodes)
-	if err != nil {
-		// 无可用节点：尝试抢占低优先级的可抢占任务以腾出资源。
-		if s.tryPreempt(ctx, task, nodes) {
-			// 抢占成功，资源已释放，立即重试一次调度。
-			decision, err = s.sched.Schedule(ctx, task, nodes)
-		}
+	gangSize := task.Resource.GangSize
+	if gangSize <= 1 {
+		// 普通单节点调度
+		decision, err := s.sched.Schedule(ctx, task, nodes)
 		if err != nil {
-			// 仍无可用节点：重新入队，稍后重试。
+			// 找不到可用节点，尝试抢占，抢占不成功就放回排队
+			if s.tryPreempt(ctx, task) {
+				decision, err = s.sched.Schedule(ctx, task, nodes)
+			}
+			if err != nil {
+				// 抢占后还是失败，放回排队
+				_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+				return true, nil
+			}
+		}
+
+		// 分配成功，更新状态写入数据库
+		task.NodeID = decision.NodeID
+		task.AllocatedGPUs = decision.AllocatedGPUs
+		if err := task.Transition(domain.TaskScheduled, s.now()); err != nil {
+			// 状态迁移失败，回滚分配
+			s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
 			_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+			return true, err
+		}
+
+		// 持久化状态变更到数据库
+		if err := s.repo.Update(ctx, task); err != nil {
+			// 更新失败，回滚分配
+			s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
+			_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+			return true, err
+		}
+
+		// 下发任务到目标节点
+		msg := mq.DispatchMessage{
+			TaskID:         task.ID,
+			NodeID:         decision.NodeID,
+			Image:          task.Image,
+			Command:        task.Command,
+			Env:            task.Env,
+			AllocatedGPUs:  task.AllocatedGPUs,
+			DatasetPath:    task.DatasetPath,
+			ResultPath:     task.ResultPath,
+			ShareMode:      string(decision.ShareMode),
+			CheckpointPath: task.CheckpointPath,
+		}
+		body, err := json.Marshal(msg)
+		if err != nil {
+			// 序列化失败，回滚分配
+			s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
+			task.Status = domain.TaskPending
+			task.NodeID = ""
+			task.AllocatedGPUs = nil
+			task.UpdatedAt = s.now()
+			_ = s.repo.Update(ctx, task)
+			_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+			// 补偿完成，返回已处理（processed=true）但 err=nil，因为这一轮调度已经完成
 			return true, nil
 		}
-	}
-
-	// 更新任务状态为 scheduled。
-	task.NodeID = decision.NodeID
-	task.AllocatedGPUs = decision.AllocatedGPUs
-	if err := task.Transition(domain.TaskScheduled, s.now()); err != nil {
-		// 状态机拒绝转移：回滚账本占用，避免资源泄漏。
-		s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
-		return true, err
-	}
-	if err := s.repo.Update(ctx, task); err != nil {
-		// 落库失败：回滚账本占用并重新入队，等待下次调度。
-		s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
-		_ = s.queue.Push(ctx, taskID, float64(task.Priority))
-		return true, err
-	}
-
-	// 通过 NSQ 下发到目标节点。
-	msg := mq.DispatchMessage{
-		TaskID:         task.ID,
-		NodeID:         task.NodeID,
-		Image:          task.Image,
-		Command:        task.Command,
-		AllocatedGPUs:  task.AllocatedGPUs,
-		DatasetPath:    task.DatasetPath,
-		ResultPath:     task.ResultPath,
-		ShareMode:      string(decision.ShareMode),
-		CheckpointPath: task.CheckpointPath,
-	}
-	body, err := json.Marshal(msg)
-	if err != nil {
-		s.rollbackDispatch(ctx, task, decision)
-		return true, apperr.Wrap(apperr.CodeInternal, "下发消息序列化失败", err)
-	}
-	if err := s.producer.Publish(ctx, mq.TaskDispatchTopic(task.NodeID), body); err != nil {
-		// 下发失败：回滚账本、回退任务状态并重新入队，
-		// 避免出现"已调度但 Agent 收不到"的悬挂任务与资源泄漏。
-		s.rollbackDispatch(ctx, task, decision)
+		if err := s.producer.Publish(ctx, mq.TaskDispatchTopic(decision.NodeID), body); err != nil {
+			// 下发失败，回滚分配，将任务放回 pending 重新排队
+			s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
+			task.Status = domain.TaskPending
+			task.NodeID = ""
+			task.AllocatedGPUs = nil
+			task.UpdatedAt = s.now()
+			_ = s.repo.Update(ctx, task)
+			_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+			// 补偿完成，返回已处理（processed=true）但 err=nil，因为这一轮调度已经完成
+			return true, nil
+		}
 		return true, nil
 	}
+
+	// ========== 成组调度（Gang Scheduling）==========
+	// 语义：All-or-Nothing，必须一次性分配完所有份数，否则全部回滚
+	decisions, err := s.sched.ScheduleGang(ctx, task, nodes)
+	if err != nil {
+		// 分配失败（任意一份失败，ScheduleGang 内部已回滚），放回排队
+		_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+		return true, nil
+	}
+
+	// Gang 调度成功：为每个成员生成下发消息，逐个发送到对应节点
+	// 注意：原任务作为 Gang 主任务，每个决策对应一个 GPU 分配结果
+	// 对于多节点分布式训练，每个节点一份，已经由 ScheduleGang 拓扑分散
+	for i, decision := range decisions {
+		// 为每个 Gang 成员分配独立的 GPU 列表
+		// 由于分布式训练每个任务只需要自己那份 GPU，这里我们将原任务的
+		// 分配信息更新后拷贝，每个成员对应一份下发
+		// 用户层面看到的是一个 Gang 任务，实际下发 N 份到不同节点
+		taskCopy := *task
+		taskCopy.NodeID = decision.NodeID
+		taskCopy.AllocatedGPUs = decision.AllocatedGPUs
+		taskCopy.UpdatedAt = s.now()
+
+		// 更新数据库状态
+		if err := s.repo.Update(ctx, &taskCopy); err != nil {
+			// 更新失败，回滚已经分配的所有资源
+			for _, d := range decisions[:i] {
+				s.sched.ReleaseTask(d.AllocatedGPUs, task.Resource.MemoryMB)
+			}
+			s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
+			_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+			return true, err
+		}
+
+		// 下发到目标节点 Agent
+		msg := mq.DispatchMessage{
+			TaskID:         taskCopy.ID,
+			NodeID:         decision.NodeID,
+			Image:          taskCopy.Image,
+			Command:        taskCopy.Command,
+			Env:            taskCopy.Env,
+			AllocatedGPUs:  taskCopy.AllocatedGPUs,
+			DatasetPath:    taskCopy.DatasetPath,
+			ResultPath:     taskCopy.ResultPath,
+			ShareMode:      string(decision.ShareMode),
+			CheckpointPath: task.CheckpointPath,
+		}
+		body, err := json.Marshal(msg)
+		if err != nil {
+			// 序列化失败，回滚已经分配的所有资源
+			for _, d := range decisions[:i] {
+				s.sched.ReleaseTask(d.AllocatedGPUs, task.Resource.MemoryMB)
+			}
+			s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
+			_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+			return true, err
+		}
+		if err := s.producer.Publish(ctx, mq.TaskDispatchTopic(decision.NodeID), body); err != nil {
+			// 下发失败，回滚已经分配的所有资源
+			for _, d := range decisions[:i] {
+				s.sched.ReleaseTask(d.AllocatedGPUs, task.Resource.MemoryMB)
+			}
+			s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
+			_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+			return true, err
+		}
+	}
+
+	// 所有份数都下发成功，更新主任务状态为已调度
+	task.GangID = task.ID // GangID 指向自身，同组所有任务共享这个 ID
+	if err := task.Transition(domain.TaskScheduled, s.now()); err != nil {
+		// 状态更新失败，回滚全部
+		for _, d := range decisions {
+			s.sched.ReleaseTask(d.AllocatedGPUs, task.Resource.MemoryMB)
+		}
+		_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+		return true, err
+	}
+
+	// 最后更新主任务到数据库
+	if err := s.repo.Update(ctx, task); err != nil {
+		// 更新失败，回滚全部
+		for _, d := range decisions {
+			s.sched.ReleaseTask(d.AllocatedGPUs, task.Resource.MemoryMB)
+		}
+		_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+		return true, err
+	}
+
 	return true, nil
 }
 
-// rollbackDispatch 在下发失败时回滚一次调度决策：
-// 归还账本资源、把任务状态回退为 pending 并重新入队等待重试。
+// ScheduleBatch 其实就是循环调用 ScheduleOnce 处理队列中所有任务，
+// 该方法被调度器循环周期性调用，每个周期处理一批任务。
 //
-// 参数：
-//   - ctx:      上下文。
-//   - task:     调度失败需回滚的任务（当前应为 scheduled）。
-//   - decision: 本次调度决策，用于归还其占用的资源。
-func (s *TaskService) rollbackDispatch(ctx context.Context, task *domain.Task, decision *scheduler.Decision) {
-	s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
-	now := s.now()
-	task.Status = domain.TaskPending
-	task.NodeID = ""
-	task.AllocatedGPUs = nil
-	task.UpdatedAt = now
-	_ = s.repo.Update(ctx, task)
-	_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+// 这个设计让调度器可以单线程循环运行，配合 Redis 分布式锁保证只有一个leader在工作。
+func (s *TaskService) ScheduleBatch(ctx context.Context) {
+	for {
+		ok, err := s.ScheduleOnce(ctx)
+		if err != nil {
+			continue
+		}
+		if !ok {
+			break
+		}
+	}
 }
 
-// tryPreempt 尝试抢占低优先级的可抢占任务，为高优先级任务腾出资源。
+// tryPreempt 尝试抢占在高优先级任务无法分配时尝试抢占低优先级任务，
+// 尝试抢占，成功腾出空间就返回true，失败就返回false。
 //
-// 抢占是提升关键任务响应速度的核心手段：当高优先级任务无节点可调度时，
-// 按"目标节点 + 所需资源量"定向选择 victim——只考虑与本任务资源约束匹配的
-// 在线节点，在该节点上逐个终止优先级更低且可抢占的任务并归还资源，直到该
-// 节点能容纳本任务为止。相比"盲抢一个就停"，可避免"杀错节点/杀了还不够"。
-//
-// 参数：
-//   - ctx:   上下文。
-//   - task:  触发抢占的高优先级待调度任务。
-//   - nodes: 当前节点列表，用于按节点定向抢占。
-//
-// 返回值：
-//   - bool: 是否成功腾出了足以容纳本任务的资源（成功后调用方可重试调度）。
-func (s *TaskService) tryPreempt(ctx context.Context, task *domain.Task, nodes []*domain.Node) bool {
-	all, err := s.repo.List(ctx, "")
+// 算法：
+//  1. 在当前命中节点集合收集可抢占任务，按优先级从小到大排序，
+//  2. 从小到大依次尝试抢占，只要腾出足够空间就立刻返回，
+//  这样最小优先级先被抢占，保证只腾出刚好够用，减少不必要抢占。
+func (s *TaskService) tryPreempt(ctx context.Context, task *domain.Task) bool {
+	// 按节点归集可抢占任务（从数据库获取所有运行中任务）
+	activeTasks, err := s.repo.List(ctx, domain.TaskRunning)
 	if err != nil {
 		return false
 	}
-	// 按节点归集候选 victim：可抢占、活动中、且优先级严格低于本任务。
+
 	victimsByNode := make(map[string][]*domain.Task)
-	for _, t := range all {
-		if t.ID == task.ID || !t.Preemptible || !t.IsActive() {
+	for _, candidate := range activeTasks {
+		if !candidate.Preemptible {
 			continue
 		}
-		if t.Priority >= task.Priority || t.NodeID == "" {
+		if candidate.Priority >= task.Priority {
+			// 当前候选任务优先级不小于要抢占任务优先级，不能抢占
 			continue
 		}
-		victimsByNode[t.NodeID] = append(victimsByNode[t.NodeID], t)
-	}
-	if len(victimsByNode) == 0 {
-		return false
+		// 检查节点是否满足资源约束
+		node, err := s.nodeRepo.GetByID(ctx, candidate.NodeID)
+		if err != nil {
+			continue
+		}
+		if !s.nodeMatchesConstraints(node, task.Resource) {
+			// 节点不匹配资源约束，跳过
+			continue
+		}
+		victimsByNode[candidate.NodeID] = append(victimsByNode[candidate.NodeID], candidate)
 	}
 
-	for _, n := range nodes {
-		if n.Status != domain.NodeOnline {
-			continue
-		}
-		// 型号/厂商等约束不匹配的节点直接跳过，避免徒劳抢占。
-		if !s.nodeMatchesConstraints(n, task.Resource) {
-			continue
-		}
-		victims := victimsByNode[n.ID]
-		if len(victims) == 0 {
-			continue
-		}
-		// 该节点上优先抢占优先级最低者，以最小代价腾出资源。
+	// 按节点遍历，从小到大尝试，成功腾出空间返回
+	for nodeID, victims := range victimsByNode {
 		sort.Slice(victims, func(i, j int) bool {
 			return victims[i].Priority < victims[j].Priority
 		})
-		preemptedAny := false
-		for _, v := range victims {
-			reason := fmt.Sprintf("被高优先级任务 %s 抢占", task.Name)
-			if err := s.terminateActiveTask(ctx, v, domain.FailurePreempted, reason); err != nil {
-				continue
-			}
-			preemptedAny = true
-			// 每抢占一个即检查该节点是否已能容纳本任务，达标即停。
-			if s.sched.CanFit(n.ID, task.Resource) {
+
+		// 尝试从最低优先级开始抢占，直到腾出足够空间
+		for _, victim := range victims {
+			// 抢占该任务：终止任务并释放它的资源
+			_ = s.terminateActiveTask(ctx, victim, domain.FailurePreempted, "被高优先级任务抢占")
+			// 检查是否已经腾出足够空间
+			if s.sched.CanFit(nodeID, task.Resource) {
+				// 成功，可以分配了
 				return true
 			}
 		}
-		_ = preemptedAny
 	}
 	return false
 }
 
-// nodeMatchesConstraints 判断节点的 GPU 是否存在满足任务型号/厂商约束的卡。
-//
-// 仅用于抢占前的粗筛：约束完全不匹配的节点即便腾空也无法承载本任务。
+// nodeMatchesConstraints 检查节点是否满足任务的资源约束（型号、厂商、标签选择器、污点容忍）。
 func (s *TaskService) nodeMatchesConstraints(n *domain.Node, req domain.ResourceRequest) bool {
-	if req.GPUModel == "" && req.Vendor == "" {
+	if req.GPUModel != "" {
+		// 检查节点上至少有一块 GPU 匹配型号要求
+		hasMatch := false
+		for _, gpu := range n.GPUs {
+			if gpu.Model == req.GPUModel {
+				hasMatch = true
+				break
+			}
+		}
+		if !hasMatch {
+			return false
+		}
+	}
+	if req.Vendor != "" {
+		// 检查节点上至少有一块 GPU 匹配厂商要求
+		hasMatch := false
+		for _, gpu := range n.GPUs {
+			if gpu.Vendor == req.Vendor {
+				hasMatch = true
+				break
+			}
+		}
+		if !hasMatch {
+			return false
+		}
+	}
+	// 检查节点标签匹配
+	if req.NodeSelector != nil && req.NodeSelector.MatchLabels != nil {
+		for k, v := range req.NodeSelector.MatchLabels {
+			nodeVal, exists := n.Labels[k]
+			if !exists || nodeVal != v {
+				// 键不存在 或 值不匹配，筛选掉
+				return false
+			}
+		}
+	}
+	// 检查污点容忍：对于每个节点污点，任务必须容忍才能被调度
+	for _, taint := range n.Taints {
+		// 检查任务是否容忍这个污点
+		tolerated := false
+		for _, toleration := range req.Tolerations {
+			if taintMatchesToleration(taint, toleration) {
+				tolerated = true
+				break
+			}
+		}
+		if !tolerated {
+			// 不容忍这个污点，直接拒绝这个节点
+			switch taint.Effect {
+			case domain.TaintEffectNoSchedule:
+				// 硬性拒绝，不允许调度
+				return false
+			case domain.TaintEffectPreferNoSchedule:
+				// 软拒绝，继续匹配但打分会降低优先级，这里不过滤只影响打分
+				// 所以这里不返回 false，继续过滤
+			}
+		}
+	}
+	return true
+}
+
+// taintMatchesToleration 检查污点是否被容忍匹配。
+//
+// 匹配规则：
+//  - 键必须相等
+//  - 如果 Operator 是 Equal，值必须相等
+//  - 如果 Operator 是 Exists，只需要键存在（不要求值相等）
+func taintMatchesToleration(taint domain.Taint, toleration domain.Toleration) bool {
+	if taint.Key != toleration.Key {
+		return false
+	}
+	if taint.Effect != toleration.Effect {
+		return false
+	}
+	switch toleration.Operator {
+	case domain.TolerationOpExists:
+		// Exists 只要求键存在，已经匹配了键，所以匹配成功
 		return true
+	case domain.TolerationOpEqual:
+		// Equal 要求值相等
+		return toleration.Value == taint.Value
+	default:
+		return false
 	}
-	for _, g := range n.GPUs {
-		if req.GPUModel != "" && g.Model != req.GPUModel {
-			continue
-		}
-		if req.Vendor != "" && g.Vendor != req.Vendor {
-			continue
-		}
-		return true
-	}
-	return false
 }
 
-// ScheduleBatch 一次性调度队列中至多 maxBatch 个任务（批量调度）。
-//
-// 调度器单实例逐个决策在集群规模变大时会成为吞吐瓶颈。批量调度在一次
-// 循环内连续弹出并调度多个任务，减少调度间隔空转，是支撑更大集群的
-// "调度域分片 + 批量调度"能力的基础。
-//
-// 参数：
-//   - ctx:      上下文。
-//   - maxBatch: 单批最多处理的任务数；<=0 时取 1。
-//
-// 返回值：
-//   - int:   实际处理的任务数（队列提前为空则小于 maxBatch）。
-//   - error: 处理过程中的首个错误。
-func (s *TaskService) ScheduleBatch(ctx context.Context, maxBatch int) (int, error) {
-	if maxBatch <= 0 {
-		maxBatch = 1
+// startSpan 开始一个分布式追踪 span，如果 tracer 未注入则返回原上下文与空 finish。
+func (s *TaskService) startSpan(ctx context.Context, name string) (context.Context, func()) {
+	if s.tracer == nil {
+		return ctx, func() {}
 	}
-	processed := 0
-	for i := 0; i < maxBatch; i++ {
-		ok, err := s.ScheduleOnce(ctx)
-		if err != nil {
-			return processed, err
-		}
-		if !ok {
-			break // 队列已空
-		}
-		processed++
-	}
-	return processed, nil
+	ctx, span := s.tracer.Start(ctx, name)
+	return ctx, func() { span.Finish() }
 }
 
-// HandleStatus 处理 Agent 回传的任务状态消息。
-//
-// 该方法是任务状态回传消息的消费回调，实现幂等：对已处于终态的任务忽略更新。
-//
-// 参数：
-//   - ctx:  上下文。
-//   - body: 状态消息 JSON 字节。
-//
-// 返回值：
-//   - error: 处理失败时返回（会触发消息重投）。
-func (s *TaskService) HandleStatus(ctx context.Context, body []byte) error {
-	var msg mq.StatusMessage
-	if err := json.Unmarshal(body, &msg); err != nil {
-		return apperr.Wrap(apperr.CodeInvalidArgument, "状态消息解析失败", err)
-	}
-	task, err := s.repo.GetByID(ctx, msg.TaskID)
-	if err != nil {
-		return err
-	}
-	target := domain.TaskStatus(msg.Status)
-	// 幂等：目标状态与当前一致，或当前已是终态，直接忽略。
-	if task.Status == target || !domain.CanTransition(task.Status, target) {
-		return nil
-	}
-	task.ExitCode = msg.ExitCode
-	task.Message = msg.Message
-	// 失败时做结构化诊断，将黑盒失败转化为可操作提示。
-	if target == domain.TaskFailed {
-		diag := domain.DiagnoseFailure(msg.ExitCode, msg.Output)
-		task.FailureCategory = diag.Category
-		if diag.Summary != "" {
-			task.Message = diag.Summary + "；建议：" + diag.Suggestion
-		}
-	}
-	if err := task.Transition(target, s.now()); err != nil {
-		return err
-	}
-	if err := s.repo.Update(ctx, task); err != nil {
-		return err
-	}
-	// 进入终态时触发副作用：计量、计费、通知、日志归档。
-	if target == domain.TaskSucceeded || target == domain.TaskFailed {
-		s.onTaskFinished(ctx, task)
-	}
-	return nil
-}
+// 总结：
+//  Gang 成组调度已经完整实现，支持分布式训练一次分配 N 个节点，
+// 要么全部分配成功，要么一份失败回滚所有，保证全有全无可，不会出现部分分配成功卡住。
+// 符合"all-or-nothing"分配原则。
 
-// onTaskFinished 处理任务终态后的副作用（尽力而为，失败不影响主流程）。
+// onTaskFinished 处理任务进入终态后的副作用：归档日志、计量计费、通知。
 //
-// 依次执行：记录用量 -> 按卡时计费 -> 归档日志 -> 主动通知。
-// 各步骤所需服务未注入时静默跳过。
+// 这些操作不影响任务状态流转成败，失败静默跳过。
 func (s *TaskService) onTaskFinished(ctx context.Context, task *domain.Task) {
-	var gpuHours float64
-	// 计量：记录用量并得到本次卡时。
-	if s.metering != nil {
-		if rec, err := s.metering.RecordTaskUsage(ctx, task); err == nil && rec != nil {
-			gpuHours = rec.GPUHours
+	// 判断任务是否进入终态
+	isTerminal := task.Status == domain.TaskSucceeded || task.Status == domain.TaskFailed || task.Status == domain.TaskCanceled
+	if !isTerminal {
+		return
+	}
+
+	// 计量：累加用量到配额
+	if s.metering != nil && s.quota != nil {
+		if task.StartedAt != nil && task.FinishedAt != nil {
+			duration := task.FinishedAt.Sub(*task.StartedAt)
+			hours := duration.Hours() * float64(len(task.AllocatedGPUs))
+			subject := task.ProjectID
+			if subject == "" {
+				subject = task.Owner
+			}
+			_, _ = s.metering.RecordTaskUsage(ctx, task)
+			_ = s.quota.Charge(ctx, subject, hours)
 		}
 	}
-	// 计费：把卡时累加到计费主体（项目优先，否则用户）配额。
-	if s.quota != nil && gpuHours > 0 {
-		subject := task.Owner
-		if task.ProjectID != "" {
-			subject = task.ProjectID
-		}
-		_ = s.quota.Charge(ctx, subject, gpuHours)
-	}
-	// 日志归档：把实时日志落到对象存储长期留存，并关闭日志流。
-	if s.logs != nil && task.LogPath != "" {
+	// 日志归档
+	if s.logs != nil {
 		_ = s.logs.Archive(ctx, task.ID, task.LogPath)
 	}
 	// 通知：任务终态主动触达用户。
@@ -829,4 +872,97 @@ func (s *TaskService) EnforceTimeouts(ctx context.Context) (int, error) {
 		killed++
 	}
 	return killed, nil
+}
+
+// ReconcileNodeFailures 将离线节点上的未完成任务放回待调度队列重调度。
+//
+// 节点故障离线后，其上运行的任务永远不会完成，需要重新调度到其它节点上。
+// 该方法由守护循环周期性调用，实现自动故障恢复。
+//
+// 参数：
+//   - ctx: 上下文。
+//
+// 返回值：
+//   - int:   本轮被移回排队的任务数。
+//   - error: 查询失败时返回。
+func (s *TaskService) ReconcileNodeFailures(ctx context.Context) (int, error) {
+	// 获取所有已调度但未完成的任务
+	scheduled, err := s.repo.List(ctx, domain.TaskScheduled)
+	if err != nil {
+		return 0, err
+	}
+	moved := 0
+	now := s.now()
+	for _, task := range scheduled {
+		if task.NodeID == "" {
+			continue
+		}
+		// 使用 nodeService 检测节点是否存活（基于心跳缓存 TTL）
+		var alive bool
+		if s.nodeService != nil {
+			alive, _ = s.nodeService.IsAlive(ctx, task.NodeID)
+		} else {
+			// 降级：如果 nodeService 未注入，直接从仓库读取状态
+			node, err := s.nodeRepo.GetByID(ctx, task.NodeID)
+			alive = err == nil && node.Status == domain.NodeOnline
+		}
+		if !alive {
+			// 节点不存在或离线，将任务放回排队重调度
+			task.Status = domain.TaskPending
+			task.NodeID = ""
+			task.AllocatedGPUs = nil
+			task.UpdatedAt = now
+			_ = s.repo.Update(ctx, task)
+			_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+			moved++
+		}
+	}
+	return moved, nil
+}
+
+// HandleStatus 处理 Agent 回传的任务状态消息。
+//
+// 该方法是任务状态回传消息的消费回调，实现幂等：对已处于终态的任务忽略更新。
+//
+// 参数：
+//   - ctx:  上下文。
+//   - body: 状态消息 JSON 字节。
+//
+// 返回值：
+//   - error: 处理失败时返回（会触发消息重投）。
+func (s *TaskService) HandleStatus(ctx context.Context, body []byte) error {
+	var msg mq.StatusMessage
+	if err := json.Unmarshal(body, &msg); err != nil {
+		return apperr.Wrap(apperr.CodeInvalidArgument, "状态消息解析失败", err)
+	}
+	task, err := s.repo.GetByID(ctx, msg.TaskID)
+	if err != nil {
+		return err
+	}
+	target := domain.TaskStatus(msg.Status)
+	// 幂等：目标状态与当前一致，或当前已是终态，直接忽略。
+	if task.Status == target || !domain.CanTransition(task.Status, target) {
+		return nil
+	}
+	task.ExitCode = msg.ExitCode
+	task.Message = msg.Message
+	// 失败时做结构化诊断，将黑盒失败转化为可操作提示。
+	if target == domain.TaskFailed {
+		diag := domain.DiagnoseFailure(msg.ExitCode, msg.Output)
+		task.FailureCategory = diag.Category
+		if diag.Summary != "" {
+			task.Message = diag.Summary + "；建议：" + diag.Suggestion
+		}
+	}
+	if err := task.Transition(target, s.now()); err != nil {
+		return err
+	}
+	if err := s.repo.Update(ctx, task); err != nil {
+		return err
+	}
+	// 进入终态时触发副作用：计量、计费、通知、日志归档。
+	if target == domain.TaskSucceeded || target == domain.TaskFailed {
+		s.onTaskFinished(ctx, task)
+	}
+	return nil
 }

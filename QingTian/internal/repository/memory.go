@@ -246,6 +246,32 @@ func (r *MemoryTaskRepo) CountActive(_ context.Context, owner, projectID string)
 	return n, nil
 }
 
+// ListByNode 实现 TaskRepository.ListByNode。
+func (r *MemoryTaskRepo) ListByNode(_ context.Context, nodeID string, statuses ...domain.TaskStatus) ([]*domain.Task, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*domain.Task, 0)
+	for _, t := range r.tasks {
+		if t.NodeID != nodeID {
+			continue
+		}
+		// 如果没有指定状态，全部返回；否则只返回匹配状态的
+		if len(statuses) == 0 {
+			cp := *t
+			out = append(out, &cp)
+			continue
+		}
+		for _, s := range statuses {
+			if t.Status == s {
+				cp := *t
+				out = append(out, &cp)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
 // MemoryUsageRepo 是 UsageRepository 的内存实现。
 type MemoryUsageRepo struct {
 	mu      sync.RWMutex
@@ -391,6 +417,90 @@ func (r *MemoryProjectRepo) ListByMember(_ context.Context, userID string) ([]*d
 	for _, p := range r.projects {
 		if p.HasMember(userID) {
 			cp := *p
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+
+// MemoryTaskTemplateRepo 是 TaskTemplateRepository 的内存实现。
+type MemoryTaskTemplateRepo struct {
+	mu         sync.RWMutex
+	templates map[string]*domain.TaskTemplate
+}
+
+// NewMemoryTaskTemplateRepo 创建内存任务模板仓储。
+func NewMemoryTaskTemplateRepo() *MemoryTaskTemplateRepo {
+	return &MemoryTaskTemplateRepo{templates: make(map[string]*domain.TaskTemplate)}
+}
+
+// Create 实现 TaskTemplateRepository.Create。
+func (r *MemoryTaskTemplateRepo) Create(_ context.Context, t *domain.TaskTemplate) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.templates[t.ID]; ok {
+		return apperr.Conflict("模板已存在: " + t.ID)
+	}
+	cp := *t
+	r.templates[t.ID] = &cp
+	return nil
+}
+
+// GetByID 实现 TaskTemplateRepository.GetByID。
+func (r *MemoryTaskTemplateRepo) GetByID(_ context.Context, id string) (*domain.TaskTemplate, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t, ok := r.templates[id]
+	if !ok {
+		return nil, apperr.NotFound("模板不存在: " + id)
+	}
+	cp := *t
+	return &cp, nil
+}
+
+// Update 实现 TaskTemplateRepository.Update。
+func (r *MemoryTaskTemplateRepo) Update(_ context.Context, t *domain.TaskTemplate) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.templates[t.ID]; !ok {
+		return apperr.NotFound("模板不存在: " + t.ID)
+	}
+	cp := *t
+	r.templates[t.ID] = &cp
+	return nil
+}
+
+// Delete 实现 TaskTemplateRepository.Delete。
+func (r *MemoryTaskTemplateRepo) Delete(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.templates, id)
+	return nil
+}
+
+// ListByOwner 实现 TaskTemplateRepository.ListByOwner。
+func (r *MemoryTaskTemplateRepo) ListByOwner(_ context.Context, ownerID string) ([]*domain.TaskTemplate, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*domain.TaskTemplate, 0)
+	for _, t := range r.templates {
+		if t.OwnerID == ownerID {
+			cp := *t
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+// ListByProject 实现 TaskTemplateRepository.ListByProject。
+func (r *MemoryTaskTemplateRepo) ListByProject(_ context.Context, projectID string) ([]*domain.TaskTemplate, error) {
+	r.mu.RLock()
+	defer r.mu.Unlock()
+	out := make([]*domain.TaskTemplate, 0)
+	for _, t := range r.templates {
+		if t.ProjectID == projectID {
+			cp := *t
 			out = append(out, &cp)
 		}
 	}

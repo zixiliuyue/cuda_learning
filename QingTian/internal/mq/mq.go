@@ -4,7 +4,11 @@
 // 业务代码不直接依赖 NSQ，单元测试可使用内存实现。
 package mq
 
-import "context"
+import (
+	"context"
+
+	"qingtian/internal/domain"
+)
 
 // 平台使用的消息主题（topic）常量。
 const (
@@ -65,11 +69,12 @@ func TaskDispatchTopic(nodeID string) string {
 
 // DispatchMessage 是任务下发消息体，由控制面发送给 Agent。
 type DispatchMessage struct {
-	TaskID         string   `json:"task_id"`
-	NodeID         string   `json:"node_id"`
-	Image          string   `json:"image"`
-	Command        string   `json:"command"`
-	AllocatedGPUs  []string `json:"allocated_gpus"`
+	TaskID         string        `json:"task_id"`
+	NodeID         string        `json:"node_id"`
+	Image          string        `json:"image"`
+	Command        string        `json:"command"`
+	Env            []domain.EnvVar `json:"env,omitempty"`
+	AllocatedGPUs  []string      `json:"allocated_gpus"`
 	DatasetPath    string   `json:"dataset_path"`
 	ResultPath     string   `json:"result_path"`
 	ShareMode      string   `json:"share_mode,omitempty"`      // 共享模式（exclusive/memory/mig）

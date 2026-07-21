@@ -52,9 +52,12 @@ func main() {
 	// 在 leader 锁保护下"加载->调度->写回"，因此此处只需创建空账本。
 	resLedger := ledger.New()
 	sched := scheduler.New(resLedger, cfg.Scheduler.Strategy)
+	nodeSvc := service.NewNodeService(infra.Store.Nodes(), infra.Cache, resLedger, cfg.Scheduler.NodeTimeout).
+		WithIdleConfig(cfg.Scheduler.IdleThresholdUtil, cfg.Scheduler.IdleThresholdDuration)
 	tracer := tracing.NewTracer(tracing.NewSlogExporter(log))
 	taskSvc := service.NewTaskService(infra.Store.Tasks(), infra.Store.Nodes(), infra.Cache, infra.Producer, sched).
-		WithTracer(tracer).WithLedgerStore(infra.Cache)
+		WithTracer(tracer).WithLedgerStore(infra.Cache).
+		WithNodeService(nodeSvc)
 
 	// 启动调度循环。
 	var wg sync.WaitGroup
@@ -100,15 +103,19 @@ func runSchedulerLoop(ctx context.Context, log logInterface, cfg *config.Config,
 				_ = infra.Cache.Release(ctx, lockKey)
 				continue
 			}
-			// 批量调度：单轮最多处理 100 个任务，防止长期占用锁。
-			if _, err := taskSvc.ScheduleBatch(ctx, 100); err != nil {
-				log.Error("批量调度任务失败", "error", err)
-			}
+			// 批量调度：处理队列中所有任务，配合 Redis 分布式锁保证只有一个 leader 在工作。
+			taskSvc.ScheduleBatch(ctx)
 			// 超时防护：终止运行超时的任务并归还资源，防止 GPU 泄漏。
 			if killed, err := taskSvc.EnforceTimeouts(ctx); err != nil {
 				log.Error("超时防护巡检失败", "error", err)
 			} else if killed > 0 {
 				log.Info("已终止超时任务", "count", killed)
+			}
+			// 节点故障自动 reconciliation：将离线节点上的未完成任务放回排队重调度。
+			if moved, err := taskSvc.ReconcileNodeFailures(ctx); err != nil {
+				log.Error("节点故障重调度巡检失败", "error", err)
+			} else if moved > 0 {
+				log.Info("已将离线节点任务放回重调度", "count", moved)
 			}
 			// CAS 写回账本快照：若快照在调度期间被其它实例修改，
 			// 则放弃写入（安全降级：下一轮从最新快照重建即可）。

@@ -79,6 +79,10 @@ func (s *QuotaService) CheckAdmit(ctx context.Context, subject string, estGPUHou
 	if err != nil {
 		return nil // 未设置配额，视为不限
 	}
+	if q.MaxGPUHours > 0 && q.RemainingGPUHours() <= 0 {
+		// 剩余卡时已经耗尽，不允许提交新任务
+		return apperr.Exhausted("配额不足：剩余卡时不够本次任务")
+	}
 	if q.MaxGPUHours > 0 && q.RemainingGPUHours() < estGPUHours {
 		return apperr.Exhausted("配额不足：剩余卡时不够本次任务")
 	}

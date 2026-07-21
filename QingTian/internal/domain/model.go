@@ -115,18 +115,22 @@ const (
 //   - GPUs:          该节点上的 GPU 列表。
 //   - DriverVersion: NVIDIA 驱动版本。
 //   - CUDAVersion:   CUDA 版本。
+//   - Labels:        节点标签，key-value 键值对，用于节点选择与分组。
+//   - Taints:        节点污点，只有容忍对应污点的任务才能调度上来。
 //   - LastHeartbeat: 最近一次心跳时间，用于判断是否离线。
 //   - RegisteredAt:  首次注册时间。
 type Node struct {
-	ID            string     `json:"id" bson:"_id"`
-	Hostname      string     `json:"hostname" bson:"hostname"`
-	IP            string     `json:"ip" bson:"ip"`
-	Status        NodeStatus `json:"status" bson:"status"`
-	GPUs          []GPU      `json:"gpus" bson:"gpus"`
-	DriverVersion string     `json:"driver_version" bson:"driver_version"`
-	CUDAVersion   string     `json:"cuda_version" bson:"cuda_version"`
-	LastHeartbeat time.Time  `json:"last_heartbeat" bson:"last_heartbeat"`
-	RegisteredAt  time.Time  `json:"registered_at" bson:"registered_at"`
+	ID            string            `json:"id" bson:"_id"`
+	Hostname      string            `json:"hostname" bson:"hostname"`
+	IP            string            `json:"ip" bson:"ip"`
+	Status        NodeStatus        `json:"status" bson:"status"`
+	GPUs          []GPU             `json:"gpus" bson:"gpus"`
+	DriverVersion string            `json:"driver_version" bson:"driver_version"`
+	CUDAVersion   string            `json:"cuda_version" bson:"cuda_version"`
+	Labels        map[string]string `json:"labels,omitempty" bson:"labels,omitempty"`
+	Taints        []Taint           `json:"taints,omitempty" bson:"taints,omitempty"`
+	LastHeartbeat time.Time         `json:"last_heartbeat" bson:"last_heartbeat"`
+	RegisteredAt  time.Time         `json:"registered_at" bson:"registered_at"`
 }
 
 // TaskStatus 表示任务生命周期中的状态。
@@ -141,22 +145,36 @@ const (
 	TaskCanceled  TaskStatus = "canceled"  // 已取消：用户主动取消
 )
 
+// NodeSelector 表示任务对节点标签的选择约束。
+//
+// 所有指定在 MatchLabels 中的键值对都必须匹配节点标签才能被选中：
+//   - key 必须存在于节点标签中
+//   - key 对应的值必须完全相等
+type NodeSelector struct {
+	// MatchLabels 键值对匹配约束。
+	MatchLabels map[string]string `json:"match_labels,omitempty" bson:"match_labels,omitempty"`
+}
+
 // ResourceRequest 表示任务对算力资源的需求。
 //
 // 字段：
-//   - GPUCount:  需要的 GPU 数量。
-//   - MemoryMB:  单卡最低显存需求（MB）。
-//   - GPUModel:  期望的 GPU 型号，空字符串表示不限型号。
-//   - Vendor:    期望的厂商，空表示不限（异构算力选型）。
-//   - ShareMode: 共享模式；空视为整卡独占（exclusive）。
-//   - GangSize:  成组调度所需的节点/实例份数，0 或 1 表示无需成组。
+//   - GPUCount:     需要的 GPU 数量。
+//   - MemoryMB:     单卡最低显存需求（MB）。
+//   - GPUModel:     期望的 GPU 型号，空字符串表示不限型号。
+//   - Vendor:       期望的厂商，空表示不限（异构算力选型）。
+//   - ShareMode:    共享模式；空视为整卡独占（exclusive）。
+//   - GangSize:     成组调度所需的节点/实例份数，0 或 1 表示无需成组。
+//   - NodeSelector: 节点标签选择约束，空表示不限制。
+//   - Tolerations:   节点污点容忍列表，匹配污点才能调度。
 type ResourceRequest struct {
-	GPUCount  int       `json:"gpu_count" bson:"gpu_count"`
-	MemoryMB  int64     `json:"memory_mb" bson:"memory_mb"`
-	GPUModel  string    `json:"gpu_model" bson:"gpu_model"`
-	Vendor    Vendor    `json:"vendor,omitempty" bson:"vendor,omitempty"`
-	ShareMode ShareMode `json:"share_mode,omitempty" bson:"share_mode,omitempty"`
-	GangSize  int       `json:"gang_size,omitempty" bson:"gang_size,omitempty"`
+	GPUCount      int             `json:"gpu_count" bson:"gpu_count"`
+	MemoryMB      int64           `json:"memory_mb" bson:"memory_mb"`
+	GPUModel      string          `json:"gpu_model" bson:"gpu_model"`
+	Vendor        Vendor          `json:"vendor,omitempty" bson:"vendor,omitempty"`
+	ShareMode     ShareMode        `json:"share_mode,omitempty" bson:"share_mode,omitempty"`
+	GangSize      int             `json:"gang_size,omitempty" bson:"gang_size,omitempty"`
+	NodeSelector  *NodeSelector   `json:"node_selector,omitempty" bson:"node_selector,omitempty"`
+	Tolerations   []Toleration   `json:"tolerations,omitempty" bson:"tolerations,omitempty"`
 }
 
 // EffectiveShareMode 返回请求实际生效的共享模式，空值归一为整卡独占。
@@ -218,6 +236,7 @@ type Task struct {
 	ProjectID       string          `json:"project_id,omitempty" bson:"project_id,omitempty"`
 	Image           string          `json:"image" bson:"image"`
 	Command         string          `json:"command" bson:"command"`
+	Env             []EnvVar        `json:"env,omitempty" bson:"env,omitempty"`
 	Resource        ResourceRequest `json:"resource" bson:"resource"`
 	Priority        int             `json:"priority" bson:"priority"`
 	Status          TaskStatus      `json:"status" bson:"status"`
@@ -354,3 +373,125 @@ const (
 	EditionCommunity  Edition = "community"  // 开源社区版
 	EditionEnterprise Edition = "enterprise" // 企业版
 )
+
+// TaskTemplate 表示任务模板，保存常用任务配置方便快速提交。
+//
+// 用户可以把经常提交的训练任务保存为模板，下次提交只需修改少量参数，
+// 提升日常提交效率。模板归属于用户或项目，支持私有共享。
+//
+// 字段：
+//   - ID:           模板唯一 ID。
+//   - Name:         模板名称。
+//   - Description:  模板描述（说明用途）。
+//   - OwnerID:      所有者用户 ID。
+//   - ProjectID:    所属项目 ID（可为空）。
+//   - Config:       任务配置（复用 ResourceRequest 结构）。
+//   - Image:        默认镜像。
+//   - Command:      默认启动命令。
+//   - DatasetPath:  默认数据集路径。
+//   - Priority:     默认优先级。
+//   - TimeoutSeconds:  默认超时秒数。
+//   - Preemptible:  是否可抢占。
+//   - CreatedAt:    创建时间。
+//   - UpdatedAt:    更新时间。
+type TaskTemplate struct {
+	ID             string                 `json:"id" bson:"_id"`
+	Name           string                 `json:"name" bson:"name"`
+	Description    string                 `json:"description,omitempty" bson:"description,omitempty"`
+	OwnerID        string                 `json:"owner_id" bson:"owner_id"`
+	ProjectID      string                 `json:"project_id,omitempty" bson:"project_id,omitempty"`
+	Config         ResourceRequest        `json:"config" bson:"config"`
+	Image          string                 `json:"image" bson:"image"`
+	Command        string                 `json:"command,omitempty" bson:"command,omitempty"`
+	Env            []EnvVar              `json:"env,omitempty" bson:"env,omitempty"`
+	DatasetPath    string                 `json:"dataset_path,omitempty" bson:"dataset_path,omitempty"`
+	Priority       int                    `json:"priority" bson:"priority"`
+	TimeoutSeconds int64                 `json:"timeout_seconds,omitempty" bson:"timeout_seconds,omitempty"`
+	Preemptible    bool                   `json:"preemptible" bson:"preemptible"`
+	CreatedAt      time.Time              `json:"created_at" bson:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at" bson:"updated_at"`
+}
+
+// TaintEffect 表示污点效果，当任务不容忍该污点时采取的行动。
+type TaintEffect string
+
+const (
+	// TaintEffectNoSchedule 不允许新任务调度到该节点
+	TaintEffectNoSchedule TaintEffect = "NoSchedule"
+	// TaintEffectPreferNoSchedule 尽量不要调度到该节点（软约束），打分降低优先级
+	TaintEffectPreferNoSchedule TaintEffect = "PreferNoSchedule"
+)
+
+// Taint 表示节点污点
+//
+// 污点标记节点具有某种特殊属性，普通任务不应该被调度到这里，
+// 只有明确容忍该污点的任务才能被分配过来，常用于：
+//   - 节点GPU故障待维修
+//   - 节点被标记为专用/独占
+//   - 节点资源即将耗尽，不再接收新任务
+//   - 节点正在执行批量维护作业
+type Taint struct {
+	Key    string       `json:"key" bson:"key"`
+	Value  string       `json:"value" bson:"value"`
+	Effect TaintEffect `json:"effect" bson:"effect"`
+}
+
+// Toleration 表示任务对污点的容忍
+//
+// 任务容忍节点污点，则可以调度到该节点。
+// 匹配规则：
+//  - 当 Operator 是 Equal 时，污点键相等且值相等才匹配
+//  - 当 Operator 是 Exists 时，只要污点键存在就匹配（不需要匹配值）
+type Toleration struct {
+	Key      string               `json:"key" bson:"key"`
+	Value    string               `json:"value,omitempty" bson:"value,omitempty"`
+	Operator TolerationOperator `json:"operator" bson:"operator"`
+	Effect   TaintEffect         `json:"effect" bson:"effect"`
+}
+
+// TolerationOperator 容忍匹配操作符
+type TolerationOperator string
+
+const (
+	// TolerationOpEqual 键和值都匹配
+	TolerationOpEqual TolerationOperator = "Equal"
+	// TolerationOpExists 键存在就匹配，忽略值
+	TolerationOpExists TolerationOperator = "Exists"
+)
+
+// TerminalSession 表示一个活跃的 Web 终端会话。
+//
+// 终端会话绑定到正在运行的任务，用户可以通过 Web 浏览器连接
+// 进行交互式调试，查看实时输出，输入命令。
+type TerminalSession struct {
+	ID         string    `json:"id" bson:"_id"`
+	TaskID     string    `json:"task_id" bson:"task_id"`
+	NodeID     string    `json:"node_id" bson:"node_id"`
+	OwnerID    string    `json:"owner_id" bson:"owner_id"`
+	ContainerID string  `json:"container_id" bson:"container_id"`
+	CreatedAt  time.Time `json:"created_at" bson:"created_at"`
+	ExpiresAt  time.Time `json:"expires_at" bson:"expires_at"`
+	Active     bool      `json:"active" bson:"active"`
+}
+
+// EnvVar 表示环境变量键值对。
+//
+// 用于任务模板和任务定义中传递自定义环境变量。
+type EnvVar struct {
+	Name  string `json:"name" bson:"name"`
+	Value string `json:"value" bson:"value"`
+}
+
+// TerminalMessage 是 Web terminal 会话中传输的数据帧。
+//
+// 用于在前端<->后端<->节点之间传输数据：
+//  - Data: 终端输出的字节（base64 编码
+//  - Input: 用户输入的字符
+//  - Resize: 窗口大小改变事件
+//  - Close: 会话关闭
+type TerminalMessage struct {
+	Type    string `json:"type"` // "data" | "input" | "resize" | "close"
+	Data    string `json:"data,omitempty"`
+	Rows    uint16 `json:"rows,omitempty"`
+	Cols    uint16 `json:"cols,omitempty"`
+}

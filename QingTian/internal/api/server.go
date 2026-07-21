@@ -17,17 +17,19 @@ import (
 
 // Server 是控制面 HTTP 服务，持有各业务服务依赖。
 type Server struct {
-	users    *service.UserService
-	nodes    *service.NodeService
-	tasks    *service.TaskService
-	tokens   *auth.TokenManager
-	logs     *service.LogService
-	storage  *service.StorageService
-	metering *service.MeteringService
-	quota    *service.QuotaService
-	projects *service.ProjectService
-	exporter *metrics.Exporter
-	edition  domain.Edition
+	users      *service.UserService
+	nodes      *service.NodeService
+	tasks      *service.TaskService
+	templates  *service.TaskTemplateService
+	terminals  *service.TerminalSessionManager
+	tokens     *auth.TokenManager
+	logs       *service.LogService
+	storage    *service.StorageService
+	metering   *service.MeteringService
+	quota      *service.QuotaService
+	projects   *service.ProjectService
+	exporter   *metrics.Exporter
+	edition    domain.Edition
 }
 
 // NewServer 创建 HTTP 服务实例（仅核心依赖）。
@@ -57,6 +59,12 @@ func (s *Server) WithQuota(q *service.QuotaService) *Server { s.quota = q; retur
 
 // WithProjects 注入项目服务。
 func (s *Server) WithProjects(p *service.ProjectService) *Server { s.projects = p; return s }
+
+// WithTemplates 注入任务模板服务。
+func (s *Server) WithTemplates(t *service.TaskTemplateService) *Server { s.templates = t; return s }
+
+// WithTerminals 注入终端会话管理器。
+func (s *Server) WithTerminals(t *service.TerminalSessionManager) *Server { s.terminals = t; return s }
 
 // WithEdition 设置平台功能版本，用于企业版能力门控。
 func (s *Server) WithEdition(e domain.Edition) *Server { s.edition = e; return s }
@@ -126,6 +134,14 @@ func (s *Server) Routes(authMW Middleware) http.Handler {
 	mux.Handle("POST /api/v1/projects", authed(s.handleCreateProject))
 	mux.Handle("GET /api/v1/projects", authed(s.handleListProjects))
 	mux.Handle("POST /api/v1/projects/{id}/members", authed(s.handleAddProjectMember))
+
+	// 任务模板。
+	mux.Handle("POST /api/v1/templates", authed(s.handleCreateTemplate))
+	mux.Handle("GET /api/v1/templates", authed(s.handleListMyTemplates))
+	mux.Handle("GET /api/v1/templates/{id}", authed(s.handleGetTemplate))
+	mux.Handle("PUT /api/v1/templates/{id}", authed(s.handleUpdateTemplate))
+	mux.Handle("DELETE /api/v1/templates/{id}", authed(s.handleDeleteTemplate))
+	mux.Handle("GET /api/v1/projects/{project_id}/templates", authed(s.handleListProjectTemplates))
 
 	return mux
 }
@@ -312,4 +328,169 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"result": "canceled"})
+}
+
+// handleCreateTemplate 创建任务模板（需 task:create 权限）。
+func (s *Server) handleCreateTemplate(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskCreate); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	claims, _ := claimsFromContext(r.Context())
+	var req service.CreateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	template, err := s.templates.Create(r.Context(), claims.UserID, req)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, template)
+}
+
+// handleListMyTemplates 列出当前用户的所有模板（需 task:view 权限）。
+func (s *Server) handleListMyTemplates(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskView); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	claims, _ := claimsFromContext(r.Context())
+	templates, err := s.templates.ListByOwner(r.Context(), claims.UserID)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, templates)
+}
+
+// handleListProjectTemplates 列出指定项目的所有模板（需 task:view 权限）。
+func (s *Server) handleListProjectTemplates(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskView); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	projectID := r.PathValue("project_id")
+	templates, err := s.templates.ListByProject(r.Context(), projectID)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, templates)
+}
+
+// handleGetTemplate 获取单个模板详情（需 task:view 权限）。
+func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskView); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	template, err := s.templates.Get(r.Context(), id)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, template)
+}
+
+// handleUpdateTemplate 更新模板（需 task:create 权限且所有者）。
+func (s *Server) handleUpdateTemplate(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskCreate); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	claims, _ := claimsFromContext(r.Context())
+	id := r.PathValue("id")
+	var req service.UpdateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	updated, err := s.templates.Update(r.Context(), id, claims.UserID, req)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, updated)
+}
+
+// handleDeleteTemplate 删除模板（需 task:create 权限且所有者）。
+func (s *Server) handleDeleteTemplate(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskCreate); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	claims, _ := claimsFromContext(r.Context())
+	id := r.PathValue("id")
+	err := s.templates.Delete(r.Context(), id, claims.UserID)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"result": "deleted"})
+}
+
+// handleCreateTerminal 创建 Web Terminal 终端会话（需 task:create 权限）。
+func (s *Server) handleCreateTerminal(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskCreate); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	claims, _ := claimsFromContext(r.Context())
+	var req service.CreateTerminalRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	session, err := s.terminals.Create(r.Context(), claims.UserID, req)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, session)
+}
+
+// handleListMyTerminals 列出当前用户所有活跃终端会话（需 task:view 权限）。
+func (s *Server) handleListMyTerminals(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskView); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	claims, _ := claimsFromContext(r.Context())
+	sessions, err := s.terminals.ListByOwner(r.Context(), claims.UserID)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, sessions)
+}
+
+// handleGetTerminal 获取终端会话信息（需 task:view 权限且所有者）。
+func (s *Server) handleGetTerminal(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskView); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	claims, _ := claimsFromContext(r.Context())
+	id := r.PathValue("id")
+	session, err := s.terminals.Get(r.Context(), id, claims.UserID)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, session)
+}
+
+// handleCloseTerminal 关闭终端会话（需 task:create 权限且所有者）。
+func (s *Server) handleCloseTerminal(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, auth.PermTaskCreate); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	_, _ = claimsFromContext(r.Context())
+	id := r.PathValue("id")
+	s.terminals.Close(id)
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"result": "closed"})
 }
