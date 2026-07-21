@@ -2,6 +2,9 @@ FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
+# 安装 CA 证书和 git，解决网络请求问题
+RUN apk add --no-cache ca-certificates git
+
 # 配置国内 Go 模块代理，解决网络问题
 ENV GOPROXY=https://goproxy.cn,direct
 ENV GO111MODULE=on
