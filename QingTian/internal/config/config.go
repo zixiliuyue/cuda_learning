@@ -61,6 +61,13 @@ type SchedulerConfig struct {
 	IdleThresholdDuration time.Duration `yaml:"idle_threshold_duration"` // 持续空闲多久才触发自动回收
 }
 
+// ShardingConfig 描述调度分片水平扩展配置。
+type ShardingConfig struct {
+	Enabled  bool `yaml:"enabled"`  // 是否启用分片水平扩展
+	Replicas int  `yaml:"replicas"` // 一致性哈希虚拟节点副本数，默认 150
+	ShardCount int `yaml:"shard_count"` // 固定分片数量，0 表示按节点分片
+}
+
 // AgentConfig 描述 Agent 配置。
 type AgentConfig struct {
 	NodeName          string        `yaml:"node_name"`          // 节点名称
@@ -74,17 +81,19 @@ type AgentConfig struct {
 // 不同服务只会用到其中一部分字段，共用同一结构可简化配置文件管理。
 type Config struct {
 	LogLevel   string          `yaml:"log_level"`
-	Edition  string          `yaml:"edition"`
-	Server   ServerConfig    `yaml:"server"`
-	Mongo    MongoConfig    `yaml:"mongo"`
-	Redis    RedisConfig    `yaml:"redis"`
-	NSQ       NSQConfig     `yaml:"nsq"`
-	MinIO     MinIOConfig    `yaml:"minio"`
-	Auth     AuthConfig    `yaml:"auth"`
-	Scheduler SchedulerConfig `yaml:"scheduler"`
-	Agent    AgentConfig    `yaml:"agent"`
-	Metering MeteringConfig  `yaml:"metering"`
-	Notify   NotifyConfig    `yaml:"notify"`
+	Edition    string          `yaml:"edition"`
+	Server     ServerConfig    `yaml:"server"`
+	Mongo      MongoConfig    `yaml:"mongo"`
+	Redis      RedisConfig    `yaml:"redis"`
+	NSQ        NSQConfig     `yaml:"nsq"`
+	MinIO      MinIOConfig    `yaml:"minio"`
+	Auth       AuthConfig    `yaml:"auth"`
+	OIDC       OIDCConfig     `yaml:"oidc"`
+	Scheduler  SchedulerConfig `yaml:"scheduler"`
+	Sharding   ShardingConfig  `yaml:"sharding"`
+	Agent      AgentConfig    `yaml:"agent"`
+	Metering   MeteringConfig  `yaml:"metering"`
+	Notify     NotifyConfig    `yaml:"notify"`
 }
 
 // MeteringConfig 描述计量与计费配置。
@@ -96,6 +105,18 @@ type MeteringConfig struct {
 type NotifyConfig struct {
 	Platform   string `yaml:"platform"`   // 渠道：feishu / wecom
 	WebhookURL string `yaml:"webhook_url"` // 群机器人 Webhook 地址
+}
+
+// OIDCConfig 描述 OIDC SSO 认证配置。
+type OIDCConfig struct {
+	Enabled        bool   `yaml:"enabled"`         // 是否启用 OIDC SSO
+	Issuer         string `yaml:"issuer"`          // OIDC Provider 地址，例如 https://keycloak.example.com/realms/myrealm
+	ClientID       string `yaml:"client_id"`       // OAuth Client ID
+	ClientSecret   string `yaml:"client_secret"`   // OAuth Client Secret
+	RedirectURL    string `yaml:"redirect_url"`    // 回调地址，例如 https://qingtian.example.com/api/v1/auth/sso/callback
+	Scopes         string `yaml:"scopes"`          // 请求的 scope，默认 openid email profile
+	UserNameClaim  string `yaml:"username_claim"`  // 哪个 claim 用作用户名，默认 email
+	DefaultRole    string `yaml:"default_role"`    // 新用户默认角色，默认 developer
 }
 
 // Load 从指定 YAML 文件加载配置，并应用默认值与环境变量覆盖。
@@ -132,12 +153,22 @@ func Default() *Config {
 		NSQ:      NSQConfig{NSQDAddr: "localhost:4150", LookupdAddr: "localhost:4161", MaxInFlight: 16},
 		MinIO:     MinIOConfig{Endpoint: "localhost:9000", AccessKey: "minioadmin", SecretKey: "minioadmin", Bucket: "qingtian", UseSSL: false},
 		Auth:     AuthConfig{JWTSecret: "change-me-in-production", AccessTokenTTL: 24 * time.Hour, RefreshTokenTTL: 7 * 24 * time.Hour},
+		OIDC: OIDCConfig{
+			Enabled:       false,
+			Scopes:        "openid email profile",
+			UserNameClaim: "email",
+			DefaultRole:   "developer",
+		},
 		Scheduler: SchedulerConfig{
 			Interval:             2 * time.Second,
 			Strategy:             "binpack",
 			NodeTimeout:          30 * time.Second,
 			IdleThresholdUtil:    10,
 			IdleThresholdDuration: 30 * time.Minute,
+		},
+		Sharding: ShardingConfig{
+			Enabled:  false,
+			Replicas: 150,
 		},
 		Agent: AgentConfig{
 			NodeName:          "",
@@ -189,5 +220,23 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("QT_CONTROL_PLANE_URL"); v != "" {
 		cfg.Agent.ControlPlaneURL = v
+	}
+	if v := os.Getenv("QT_OIDC_ENABLED"); v != "" {
+		cfg.OIDC.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("QT_OIDC_ISSUER"); v != "" {
+		cfg.OIDC.Issuer = v
+	}
+	if v := os.Getenv("QT_OIDC_CLIENT_ID"); v != "" {
+		cfg.OIDC.ClientID = v
+	}
+	if v := os.Getenv("QT_OIDC_CLIENT_SECRET"); v != "" {
+		cfg.OIDC.ClientSecret = v
+	}
+	if v := os.Getenv("QT_OIDC_REDIRECT_URL"); v != "" {
+		cfg.OIDC.RedirectURL = v
+	}
+	if v := os.Getenv("QT_OIDC_DEFAULT_ROLE"); v != "" {
+		cfg.OIDC.DefaultRole = v
 	}
 }

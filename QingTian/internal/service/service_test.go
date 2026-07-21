@@ -30,7 +30,7 @@ func jsonUnmarshal(b []byte, v any) error {
 // TestUserRegisterLogin 验证注册与登录流程。
 func TestUserRegisterLogin(t *testing.T) {
 	repo := repository.NewMemoryUserRepo()
-	tm := auth.NewTokenManager("secret", time.Hour)
+	tm := auth.NewTokenManager("secret", time.Hour, 7*24*time.Hour)
 	svc := NewUserService(repo, tm)
 	ctx := context.Background()
 
@@ -98,11 +98,25 @@ func (r *noDedupUserRepo) List(_ context.Context) ([]*domain.User, error) {
 	return out, nil
 }
 
+func (r *noDedupUserRepo) FindByExternalID(_ context.Context, externalID string) (*domain.User, error) {
+	for _, u := range r.users {
+		if u.ExternalID == externalID {
+			return u, nil
+		}
+	}
+	return nil, apperr.NotFound("用户不存在: external_id=" + externalID)
+}
+
+func (r *noDedupUserRepo) Update(_ context.Context, u *domain.User) error {
+	r.users[u.Username] = u
+	return nil
+}
+
 // TestRegisterRejectsDuplicateWithoutRepoDedup 验证：即使仓储层不做去重，
 // 服务层也必须拦住重复用户名，返回冲突错误。
 func TestRegisterRejectsDuplicateWithoutRepoDedup(t *testing.T) {
 	repo := newNoDedupUserRepo()
-	tm := auth.NewTokenManager("secret", time.Hour)
+	tm := auth.NewTokenManager("secret", time.Hour, 7*24*time.Hour)
 	svc := NewUserService(repo, tm)
 	ctx := context.Background()
 

@@ -18,6 +18,10 @@ type UserRepository interface {
 	GetByID(ctx context.Context, id string) (*domain.User, error)
 	// GetByUsername 按用户名查询用户，不存在时返回 CodeNotFound。
 	GetByUsername(ctx context.Context, username string) (*domain.User, error)
+	// FindByExternalID 按第三方 OIDC 外部 ID 查询用户，不存在时返回 CodeNotFound。
+	FindByExternalID(ctx context.Context, externalID string) (*domain.User, error)
+	// Update 更新用户信息。
+	Update(ctx context.Context, u *domain.User) error
 	// List 返回全部用户。
 	List(ctx context.Context) ([]*domain.User, error)
 }

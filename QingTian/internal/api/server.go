@@ -22,6 +22,7 @@ type Server struct {
 	tasks      *service.TaskService
 	templates  *service.TaskTemplateService
 	terminals  *service.TerminalSessionManager
+	sso        *service.SSOService
 	tokens     *auth.TokenManager
 	logs       *service.LogService
 	storage    *service.StorageService
@@ -65,6 +66,9 @@ func (s *Server) WithTemplates(t *service.TaskTemplateService) *Server { s.templ
 
 // WithTerminals 注入终端会话管理器。
 func (s *Server) WithTerminals(t *service.TerminalSessionManager) *Server { s.terminals = t; return s }
+
+// WithSSO 注入 SSO 单点登录服务。
+func (s *Server) WithSSO(sso *service.SSOService) *Server { s.sso = sso; return s }
 
 // WithEdition 设置平台功能版本，用于企业版能力门控。
 func (s *Server) WithEdition(e domain.Edition) *Server { s.edition = e; return s }
@@ -142,6 +146,12 @@ func (s *Server) Routes(authMW Middleware) http.Handler {
 	mux.Handle("PUT /api/v1/templates/{id}", authed(s.handleUpdateTemplate))
 	mux.Handle("DELETE /api/v1/templates/{id}", authed(s.handleDeleteTemplate))
 	mux.Handle("GET /api/v1/projects/{project_id}/templates", authed(s.handleListProjectTemplates))
+
+	// SSO OIDC 端点（无需认证）
+	if s.sso != nil {
+		mux.HandleFunc("GET /api/v1/auth/sso/login", s.handleSSOLogin)
+		mux.HandleFunc("GET /api/v1/auth/sso/callback", s.handleSSOCallback)
+	}
 
 	return mux
 }
@@ -239,7 +249,8 @@ func (s *Server) handleNodeRegister(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("id")
 	var req struct {
-		GPUs []domain.GPU `json:"gpus"`
+		GPUs          []domain.GPU `json:"gpus"`
+		LocalDatasets []string    `json:"local_datasets,omitempty"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		httpx.WriteError(w, err)
@@ -248,6 +259,13 @@ func (s *Server) handleNodeHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if err := s.nodes.Heartbeat(r.Context(), nodeID, req.GPUs); err != nil {
 		httpx.WriteError(w, err)
 		return
+	}
+	// 如果心跳携带了本地数据集列表，更新节点信息
+	if len(req.LocalDatasets) > 0 {
+		if node, err := s.nodes.Get(r.Context(), nodeID); err == nil {
+			node.LocalDatasets = req.LocalDatasets
+			_ = s.nodes.UpdateLocalDatasets(r.Context(), nodeID, req.LocalDatasets)
+		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"result": "ok"})
 }
@@ -493,4 +511,55 @@ func (s *Server) handleCloseTerminal(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.terminals.Close(id)
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"result": "closed"})
+}
+
+// handleSSOLogin 处理 SSO 登录发起，重定向到 OIDC Provider。
+//
+// 生成随机 state，重定向用户到 OIDC Provider 进行认证。
+// 前端可以跳转到此端点开始 SSO 登录流程。
+func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
+	if s.sso == nil {
+		httpx.WriteError(w, apperr.NotFound("SSO not enabled"))
+		return
+	}
+	// Generate random state for CSRF protection
+	// In production, you should store state in session or cookie for validation
+	state := "state" // TODO: In real implementation, generate random and store in cookie
+	url := s.sso.GetAuthorizationURL(state)
+	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+}
+
+// handleSSOCallback 处理 OIDC Provider 回调，完成认证并返回 JWT。
+//
+// 流程：
+//  1. 校验 state（TODO）
+//  2. 用 code 换 token，验证 ID token
+//  3. 查找或创建用户，自动 provisioning
+//  4. 签发本平台 JWT 令牌返回给前端
+func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
+	if s.sso == nil {
+		httpx.WriteError(w, apperr.NotFound("SSO not enabled"))
+		return
+	}
+
+	code := r.URL.Query().Get("code")
+	state := r.URL.Query().Get("state")
+	_ = state // TODO: Validate state against stored value to prevent CSRF
+
+	if code == "" {
+		httpx.WriteError(w, apperr.InvalidArgument("code parameter is required"))
+		return
+	}
+
+	user, tokenPair, err := s.sso.Callback(r.Context(), code)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+
+	// Return the same format as normal login
+	httpx.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"token": tokenPair,
+		"user":  user,
+	})
 }

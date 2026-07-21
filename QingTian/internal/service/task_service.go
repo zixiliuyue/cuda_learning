@@ -36,6 +36,7 @@ import (
 //   - logs:      日志服务（任务结束归档日志）。
 //   - metering: 计量服务（任务结束记录用量）。
 //   - quota:     配额服务（提交任务校验配额）。
+//   - projects:  项目服务（项目配额校验）。
 //   - notifier:  通知服务（任务结束通知用户）。
 //   - tracer:    分布式追踪。
 //   - ledgerStore: 账本快照共享存储。
@@ -45,12 +46,13 @@ type TaskService struct {
 	nodeService  *NodeService
 	queue        cache.PriorityQueue
 	producer     mq.Producer
-	sched        *scheduler.Scheduler
+	sched        scheduler.SchedulerInterface
 	now          func() time.Time
 
 	logs     *LogService
 	metering *MeteringService
 	quota    *QuotaService
+	projects *ProjectService
 	notifier notify.Notifier
 	tracer   *tracing.Tracer
 
@@ -72,11 +74,11 @@ func NewTaskService(
 	nodeRepo repository.NodeRepository,
 	queue cache.PriorityQueue,
 	producer mq.Producer,
-	sched *scheduler.Scheduler,
+	sched scheduler.SchedulerInterface,
 ) *TaskService {
 	return &TaskService{
 		repo:      repo,
-		nodeRepo:    nodeRepo,
+		nodeRepo:  nodeRepo,
 		queue:     queue,
 		producer:  producer,
 		sched:     sched,
@@ -123,6 +125,12 @@ func (s *TaskService) WithLedgerStore(c cache.Cache) *TaskService {
 // WithNodeService 注入节点服务，用于节点存活检测（链式）。
 func (s *TaskService) WithNodeService(ns *NodeService) *TaskService {
 	s.nodeService = ns
+	return s
+}
+
+// WithProjects 注入项目服务（链式）。
+func (s *TaskService) WithProjects(p *ProjectService) *TaskService {
+	s.projects = p
 	return s
 }
 

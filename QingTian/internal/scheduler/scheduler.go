@@ -33,7 +33,33 @@ type Decision struct {
 	ShareMode     domain.ShareMode // 实际生效的共享模式
 }
 
-// Scheduler 是调度器核心。
+// SchedulerInterface 定义调度器接口，让单调度器和分片调度器都能实现。
+//
+// 所有调度器都必须实现这个接口，以便 TaskService 透明使用。
+type SchedulerInterface interface {
+	// Schedule 为任务选择最优节点并完成资源分配。
+	Schedule(ctx context.Context, task *domain.Task, nodes []*domain.Node) (*Decision, error)
+	// ScheduleGang 为分布式训练任务做成组（Gang）调度，all-or-nothing 语义。
+	ScheduleGang(ctx context.Context, task *domain.Task, nodes []*domain.Node) ([]*Decision, error)
+	// RebuildLedger 以存储层为真相源重建资源账本。
+	RebuildLedger(nodes []*domain.Node, activeTasks []*domain.Task)
+	// ReleaseTask 归还一个任务已占用的资源到账本。
+	ReleaseTask(allocatedIDs []string, memoryMB int64)
+	// CanFit 只读地判断某节点当前是否能容纳指定资源需求。
+	CanFit(nodeID string, req domain.ResourceRequest) bool
+	// LoadLedgerSnapshot 从共享存储的 JSON 快照恢复账本状态。
+	LoadLedgerSnapshot(data []byte) (int64, error)
+	// DumpLedgerSnapshot 将当前账本状态序列化为 JSON 快照。
+	DumpLedgerSnapshot(version int64) ([]byte, error)
+	// SyncNodes 将全部节点的 GPU 容量登记进账本（保留既有占用）。
+	SyncNodes(nodes []*domain.Node)
+}
+
+// 编译时检查确保 *Scheduler 实现了 SchedulerInterface 接口。
+var _ SchedulerInterface = (*Scheduler)(nil)
+var _ SchedulerInterface = (*ShardedScheduler)(nil)
+
+// Scheduler 是单实例调度器核心。
 //
 // 字段：
 //   - ledger:   资源账本，用于试分配与打分。
@@ -63,6 +89,9 @@ func New(l *ledger.Ledger, strategy string) *Scheduler {
 //  2. Score：对候选节点按策略打分。
 //  3. 选出最高分节点，其余候选的试分配结果回滚（释放）。
 //
+// 数据亲和性：如果节点本地已经缓存了任务所需数据集，会获得很大的加分，
+// 保证有缓存的节点优先被选中，从而减少跨节点数据传输。
+//
 // 参数：
 //   - ctx:   上下文。
 //   - task:  待调度任务。
@@ -88,7 +117,8 @@ func (s *Scheduler) Schedule(_ context.Context, task *domain.Task, nodes []*doma
 		if !s.ledger.CanAllocate(n.ID, task.Resource) {
 			continue // 该节点资源不足，跳过
 		}
-		score := s.score(s.ledger.NodeFreeMemory(n.ID))
+		freeMem := s.ledger.NodeFreeMemory(n.ID)
+		score := s.score(freeMem, n, task)
 		if !found || score > bestScore {
 			found = true
 			bestScore = score
@@ -112,6 +142,32 @@ func (s *Scheduler) Schedule(_ context.Context, task *domain.Task, nodes []*doma
 		AllocatedGPUs: alloc.AllocatedIDs(),
 		ShareMode:     alloc.ShareMode,
 	}, nil
+}
+
+// hasLocalDataset 判断节点本地是否已缓存指定数据集。
+//
+// 数据集路径匹配支持前缀匹配：
+//   - "/data/imagenet" 匹配 "/data/imagenet/train" 和 "/data/imagenet/val"
+//   - 完全匹配也支持
+func hasLocalDataset(node *domain.Node, taskDataset string) bool {
+	if taskDataset == "" || len(node.LocalDatasets) == 0 {
+		return false
+	}
+	for _, localPath := range node.LocalDatasets {
+		// 完全匹配
+		if localPath == taskDataset {
+			return true
+		}
+		// 前缀匹配：任务数据集路径以本地缓存路径开头
+		if len(taskDataset) > len(localPath) && taskDataset[:len(localPath)] == localPath {
+			return true
+		}
+		// 反向：本地缓存路径以任务数据集开头（任务数据集是子集）
+		if len(localPath) > len(taskDataset) && localPath[:len(taskDataset)] == taskDataset {
+			return true
+		}
+	}
+	return false
 }
 
 // RebuildLedger 以存储层为真相源重建资源账本。
@@ -185,6 +241,8 @@ func (s *Scheduler) CanFit(nodeID string, req domain.ResourceRequest) bool {
 //
 // 参数：
 //   - freeMemory: 分配后节点剩余显存（MB）。
+//   - node:        节点信息，用于检查数据亲和性。
+//   - task:        待调度任务，用于获取数据集路径。
 //
 // 返回值：
 //   - float64: 分值，越大越优先。
@@ -192,13 +250,24 @@ func (s *Scheduler) CanFit(nodeID string, req domain.ResourceRequest) bool {
 // 策略说明：
 //   - BinPack：剩余越少分越高（取负值），从而优先填满节点、减少碎片。
 //   - Spread： 剩余越多分越高，从而均衡负载。
-func (s *Scheduler) score(freeMemory int64) float64 {
+//   - 数据亲和性加成：如果节点本地已经缓存了任务所需数据集，加分 1e6，
+//     保证有缓存的节点一定优先于没有缓存的节点。
+func (s *Scheduler) score(freeMemory int64, node *domain.Node, task *domain.Task) float64 {
+	var base float64
 	switch s.strategy {
 	case StrategySpread:
-		return float64(freeMemory)
+		base = float64(freeMemory)
 	default: // BinPack
-		return -float64(freeMemory)
+		base = -float64(freeMemory)
 	}
+
+	// 数据亲和性加成：如果节点本地有这个数据集，给一个很大的加分
+	// 保证有缓存的节点一定优先被选中
+	if task.DatasetPath != "" && hasLocalDataset(node, task.DatasetPath) {
+		base += 1000000 // 1e6 加成，远大于显存分值范围，保证优先级
+	}
+
+	return base
 }
 
 // ScheduleGang 为分布式训练任务做成组（Gang）调度。

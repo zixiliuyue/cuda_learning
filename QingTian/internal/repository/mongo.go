@@ -68,6 +68,11 @@ func (s *MongoStore) Projects() *MongoProjectRepo {
 	return &MongoProjectRepo{col: s.db.Collection("projects")}
 }
 
+// TaskTemplates 返回任务模板仓储的 MongoDB 实现。
+func (s *MongoStore) TaskTemplates() *MongoTaskTemplateRepo {
+	return &MongoTaskTemplateRepo{col: s.db.Collection("task_templates")}
+}
+
 // MongoUserRepo 是 UserRepository 的 MongoDB 实现。
 type MongoUserRepo struct{ col *mongo.Collection }
 
@@ -118,6 +123,32 @@ func (r *MongoUserRepo) List(ctx context.Context) ([]*domain.User, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// FindByExternalID 实现 UserRepository.FindByExternalID。
+func (r *MongoUserRepo) FindByExternalID(ctx context.Context, externalID string) (*domain.User, error) {
+	var u domain.User
+	err := r.col.FindOne(ctx, bson.M{"external_id": externalID}).Decode(&u)
+	if err == mongo.ErrNoDocuments {
+		return nil, apperr.NotFound("用户不存在: external_id=" + externalID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// Update 实现 UserRepository.Update。
+func (r *MongoUserRepo) Update(ctx context.Context, u *domain.User) error {
+	filter := bson.M{"_id": u.ID}
+	_, err := r.col.ReplaceOne(ctx, filter, u)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return apperr.NotFound("用户不存在: " + u.ID)
+		}
+		return err
+	}
+	return nil
 }
 
 // MongoNodeRepo 是 NodeRepository 的 MongoDB 实现。

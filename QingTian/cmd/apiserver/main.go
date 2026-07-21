@@ -21,7 +21,6 @@ import (
 	"qingtian/internal/ledger"
 	"qingtian/internal/logger"
 	"qingtian/internal/metrics"
-	"qingtian/internal/mq"
 	"qingtian/internal/notify"
 	"qingtian/internal/scheduler"
 	"qingtian/internal/service"
@@ -60,38 +59,90 @@ func main() {
 
 	// Assemble dependencies.
 	tokens := auth.NewTokenManager(cfg.Auth.JWTSecret, cfg.Auth.AccessTokenTTL, cfg.Auth.RefreshTokenTTL)
-	resLedger := ledger.New()
-	sched := scheduler.New(resLedger, cfg.Scheduler.Strategy)
+	var resLedger *ledger.Ledger
+	var sched scheduler.SchedulerInterface
+	if cfg.Sharding.Enabled {
+		// Sharded scheduler for horizontal scaling across multiple shards
+		sharded := scheduler.NewShardedScheduler(scheduler.ShardingConfig{
+			Enabled:  cfg.Sharding.Enabled,
+			Replicas: cfg.Sharding.Replicas,
+			ShardCount: cfg.Sharding.ShardCount,
+		}, cfg.Scheduler.Strategy)
+		// Note: Caller needs to add shards and nodes to the sharded scheduler after creation
+		// Typically this is done when starting up from database by reading all nodes and grouping
+		// them into configured shards.
+		sched = sharded
+		log.Info("Sharded scheduler enabled", "replicas", cfg.Sharding.Replicas, "shard_count", cfg.Sharding.ShardCount)
+		// For sharded mode, node service still needs a ledger for heartbeat caching.
+		// We use a single global ledger for node info cache since it's only tracking current node status,
+		// not the resource allocation which is handled per shard.
+		resLedger = ledger.New()
+	} else {
+		// Single scheduler for normal deployment
+		resLedger = ledger.New()
+		sched = scheduler.New(resLedger, cfg.Scheduler.Strategy)
+	}
+
 
 	// Extend services: log, storage, metering, quota, project, notify.
 	logSvc := service.NewLogService(infra.LogStream, infra.Object)
-	storageSvc := service.NewStorageService(infra.Object, int(cfg.Auth.TokenTTL.Seconds()))
+	_ = service.NewStorageService(infra.Object, int(cfg.Auth.AccessTokenTTL.Seconds()))
 	meteringSvc := service.NewMeteringService(infra.Store.Usages(), cfg.Metering.PricePerGPUHour)
 	quotaSvc := service.NewQuotaService(infra.Store.Quotas())
 	projectSvc := service.NewProjectService(infra.Store.Projects())
+	templateSvc := service.NewTaskTemplateService(infra.Store.TaskTemplates())
+	terminalMgr := service.NewTerminalSessionManager(infra.Store.Tasks())
 	var notifier notify.Notifier
 	if cfg.Notify.WebhookURL != "" {
 		notifier = notify.NewWebhookNotifier(cfg.Notify.Platform, cfg.Notify.WebhookURL)
 	}
 
+	userSvc := service.NewUserService(infra.Store.Users(), tokens)
+
 	nodeSvc := service.NewNodeService(infra.Store.Nodes(), infra.Cache, resLedger, cfg.Scheduler.NodeTimeout).
 		WithIdleConfig(cfg.Scheduler.IdleThresholdUtil, cfg.Scheduler.IdleThresholdDuration)
-	taskSvc := service.NewTaskService(infra.Store.Tasks(), infra.Cache, infra.Producer, sched).
+	taskSvc := service.NewTaskService(infra.Store.Tasks(), infra.Store.Nodes(), infra.Cache, infra.Producer, sched).
 		WithLogService(logSvc).
-		WithStorageService(storageSvc).
 		WithMetering(meteringSvc).
 		WithQuota(quotaSvc).
-		WithProjects(projectSvc)
+		WithProjects(projectSvc).
+		WithNodeService(nodeSvc)
 	if notifier != nil {
 		taskSvc = taskSvc.WithNotifier(notifier)
 	}
 	tracer := tracing.NewTracer(tracing.NewSlogExporter(log))
 	taskSvc = taskSvc.WithTracer(tracer)
 
+	// Initialize SSO OIDC service if enabled
+	var ssoSvc *service.SSOService
+	if cfg.OIDC.Enabled {
+		oidcCfg := auth.OIDCConfig{
+			Issuer:        cfg.OIDC.Issuer,
+			ClientID:      cfg.OIDC.ClientID,
+			ClientSecret:  cfg.OIDC.ClientSecret,
+			RedirectURL:   cfg.OIDC.RedirectURL,
+			Scopes:        cfg.OIDC.Scopes,
+			UserNameClaim: cfg.OIDC.UserNameClaim,
+		}
+		oidcAuth, err := auth.NewOIDCAuthenticator(ctx, oidcCfg)
+		if err != nil {
+			log.Error("failed to initialize OIDC authenticator", "error", err)
+			os.Exit(1)
+		}
+		ssoSvc = service.NewSSOService(oidcAuth, infra.Store.Users(), tokens, cfg.OIDC.DefaultRole)
+		log.Info("OIDC SSO enabled", "issuer", cfg.OIDC.Issuer)
+	}
+
 	// Build routes.
-	metricsExporter := metrics.NewExporter(infra.Nodes())
-	router := api.NewServer(userSvc, nodeSvc, taskSvc, metricsExporter)
-	httpServer := &http.Server{Addr: cfg.Server.Addr, Handler: router}
+	metricsExporter := metrics.NewExporter(infra.Store.Nodes())
+	server := api.NewServer(userSvc, nodeSvc, taskSvc, tokens).
+		WithTemplates(templateSvc).
+		WithTerminals(terminalMgr).
+		WithSSO(ssoSvc).
+		WithEdition(domain.Edition(cfg.Edition)).
+		WithMetricsExporter(metricsExporter)
+	mux := server.Routes(api.AuthMiddleware(tokens))
+	httpServer := &http.Server{Addr: cfg.Server.Addr, Handler: mux}
 
 	// Start idle node auto-reclamation scanner with scan interval 1min to balance timeliness and performance overhead.
 	go nodeSvc.StartIdleScanner(ctx, time.Minute)

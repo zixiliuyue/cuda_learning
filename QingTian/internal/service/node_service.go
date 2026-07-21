@@ -67,6 +67,7 @@ type RegisterRequest struct {
 	CUDAVersion   string            `json:"cuda_version"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	Taints        []domain.Taint    `json:"taints,omitempty"`
+	LocalDatasets []string          `json:"local_datasets,omitempty"`
 }
 
 // Register 注册（或重新注册）一个节点。
@@ -87,17 +88,18 @@ func (s *NodeService) Register(ctx context.Context, req RegisterRequest) (*domai
 	}
 	now := s.now()
 	node := &domain.Node{
-		ID:            "node-" + req.Hostname,
-		Hostname:      req.Hostname,
-		IP:            req.IP,
-		Status:        domain.NodeOnline,
-		GPUs:          req.GPUs,
-		DriverVersion: req.DriverVersion,
-		CUDAVersion:   req.CUDAVersion,
-		Labels:        req.Labels,
-		Taints:        req.Taints,
-		LastHeartbeat: now,
-		RegisteredAt:  now,
+		ID:             "node-" + req.Hostname,
+		Hostname:       req.Hostname,
+		IP:             req.IP,
+		Status:         domain.NodeOnline,
+		GPUs:           req.GPUs,
+		DriverVersion:  req.DriverVersion,
+		CUDAVersion:    req.CUDAVersion,
+		Labels:         req.Labels,
+		Taints:         req.Taints,
+		LocalDatasets:  req.LocalDatasets,
+		LastHeartbeat:  now,
+		RegisteredAt:   now,
 	}
 	if err := s.repo.Upsert(ctx, node); err != nil {
 		return nil, err
@@ -173,6 +175,18 @@ func (s *NodeService) SetOffline(ctx context.Context, id string) error {
 		return err
 	}
 	return s.cache.Del(ctx, heartbeatKeyPrefix+id)
+}
+
+// UpdateLocalDatasets 更新节点本地数据集缓存列表。
+//
+// 由 Agent 在心跳时调用，反映本地缓存变化（新增/删除数据集）。
+func (s *NodeService) UpdateLocalDatasets(ctx context.Context, nodeID string, datasets []string) error {
+	node, err := s.repo.GetByID(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	node.LocalDatasets = datasets
+	return s.repo.Upsert(ctx, node)
 }
 
 // IdleNode 表示一个被判定为空闲的节点及其空闲信息，供空闲卡回收使用。

@@ -77,6 +77,37 @@ func (r *MemoryUserRepo) List(_ context.Context) ([]*domain.User, error) {
 	return out, nil
 }
 
+// FindByExternalID 实现 UserRepository.FindByExternalID。
+func (r *MemoryUserRepo) FindByExternalID(_ context.Context, externalID string) (*domain.User, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, u := range r.byID {
+		if u.ExternalID == externalID {
+			cp := *u
+			return &cp, nil
+		}
+	}
+	return nil, apperr.NotFound("用户不存在: external_id=" + externalID)
+}
+
+// Update 实现 UserRepository.Update。
+func (r *MemoryUserRepo) Update(_ context.Context, u *domain.User) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byID[u.ID]; !ok {
+		return apperr.NotFound("用户不存在: " + u.ID)
+	}
+	// 如果用户名改变，需要更新名称索引
+	old, ok := r.byID[u.ID]
+	if ok && old.Username != u.Username {
+		delete(r.names, old.Username)
+		r.names[u.Username] = u.ID
+	}
+	cp := *u
+	r.byID[u.ID] = &cp
+	return nil
+}
+
 // MemoryNodeRepo 是 NodeRepository 的内存实现。
 type MemoryNodeRepo struct {
 	mu    sync.RWMutex

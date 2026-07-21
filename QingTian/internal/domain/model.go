@@ -27,6 +27,8 @@ type User struct {
 	ID           string    `json:"id" bson:"_id"`
 	Username     string    `json:"username" bson:"username"`
 	PasswordHash string    `json:"-" bson:"password_hash"`
+	ExternalID   string    `json:"external_id,omitempty" bson:"external_id,omitempty"`
+	Email        string    `json:"email,omitempty" bson:"email,omitempty"`
 	Role         Role      `json:"role" bson:"role"`
 	CreatedAt    time.Time `json:"created_at" bson:"created_at"`
 }
@@ -120,17 +122,18 @@ const (
 //   - LastHeartbeat: 最近一次心跳时间，用于判断是否离线。
 //   - RegisteredAt:  首次注册时间。
 type Node struct {
-	ID            string            `json:"id" bson:"_id"`
-	Hostname      string            `json:"hostname" bson:"hostname"`
-	IP            string            `json:"ip" bson:"ip"`
-	Status        NodeStatus        `json:"status" bson:"status"`
-	GPUs          []GPU             `json:"gpus" bson:"gpus"`
-	DriverVersion string            `json:"driver_version" bson:"driver_version"`
-	CUDAVersion   string            `json:"cuda_version" bson:"cuda_version"`
-	Labels        map[string]string `json:"labels,omitempty" bson:"labels,omitempty"`
-	Taints        []Taint           `json:"taints,omitempty" bson:"taints,omitempty"`
-	LastHeartbeat time.Time         `json:"last_heartbeat" bson:"last_heartbeat"`
-	RegisteredAt  time.Time         `json:"registered_at" bson:"registered_at"`
+	ID             string            `json:"id" bson:"_id"`
+	Hostname       string            `json:"hostname" bson:"hostname"`
+	IP             string            `json:"ip" bson:"ip"`
+	Status         NodeStatus        `json:"status" bson:"status"`
+	GPUs           []GPU             `json:"gpus" bson:"gpus"`
+	DriverVersion  string            `json:"driver_version" bson:"driver_version"`
+	CUDAVersion    string            `json:"cuda_version" bson:"cuda_version"`
+	Labels         map[string]string `json:"labels,omitempty" bson:"labels,omitempty"`
+	Taints         []Taint           `json:"taints,omitempty" bson:"taints,omitempty"`
+	LocalDatasets  []string          `json:"local_datasets,omitempty" bson:"local_datasets,omitempty"`
+	LastHeartbeat  time.Time         `json:"last_heartbeat" bson:"last_heartbeat"`
+	RegisteredAt   time.Time         `json:"registered_at" bson:"registered_at"`
 }
 
 // TaskStatus 表示任务生命周期中的状态。
