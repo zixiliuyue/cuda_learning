@@ -15,7 +15,8 @@ import (
 //   - pending 可进入 scheduled（被调度）或 canceled（提交后立即取消）。
 //   - scheduled 可进入 running（Agent 拉起）、failed（拉起失败）或 canceled。
 //   - running 可进入终态 succeeded/failed，或被 canceled。
-//   - succeeded/failed/canceled 均为终态，不允许再转移。
+//   - succeeded/canceled 均为终态，不允许再转移。
+//   - failed 允许转移回 pending 用于自动重试（还未耗尽重试次数时）。
 var allowedTransitions = map[TaskStatus]map[TaskStatus]bool{
 	TaskPending: {
 		TaskScheduled: true,
@@ -32,8 +33,10 @@ var allowedTransitions = map[TaskStatus]map[TaskStatus]bool{
 		TaskCanceled:  true,
 	},
 	TaskSucceeded: {},
-	TaskFailed:    {},
-	TaskCanceled:  {},
+	TaskFailed: {
+		TaskPending: true, // 允许自动重试：失败 → 待调度
+	},
+	TaskCanceled: {},
 }
 
 // CanTransition 判断任务能否从 from 状态转移到 to 状态。

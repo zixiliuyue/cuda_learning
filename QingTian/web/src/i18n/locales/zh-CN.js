@@ -9,6 +9,9 @@ export default {
     confirm: '确定',
     optional: '可选',
     user: '用户',
+    actions: '操作',
+    required: '必填',
+    success: '成功',
   },
   // 侧边菜单。
   menu: {
@@ -172,7 +175,10 @@ export default {
     projectName: '项目名称',
     namePlaceholder: '例如 团队大模型微调',
     create: '创建',
+    projectOwner: '创建者',
+    owner: '创建者',
     members: '项目成员',
+    memberCount: '成员数',
     addMember: '添加成员',
     addMemberPlaceholder: '输入用户名',
     add: '添加',

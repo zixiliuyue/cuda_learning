@@ -23,7 +23,6 @@ func (r *QingTianClusterReconciler) ensureApiserver(
 	var existing appsv1.Deployment
 	err := r.Get(ctx, client.ObjectKey{Namespace: cluster.Namespace, Name: name}, &existing)
 	if err == nil {
-		// Deployment already exists - update if needed
 		return nil
 	}
 	if !errors.IsNotFound(err) {
@@ -42,18 +41,18 @@ func (r *QingTianClusterReconciler) ensureApiserver(
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: cluster.Namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(cluster, qingtianv1.GroupVersion.WithKind("QingTianCluster")),
-			},
-			Labels: map[string]string{
-				"app":        "qingtian",
-				"component":  "apiserver",
-				"cluster":    cluster.Name,
-				"version":    cluster.Spec.Version,
-			},
+		Name:      name,
+		Namespace: cluster.Namespace,
+		OwnerReferences: []metav1.OwnerReference{
+			*metav1.NewControllerRef(cluster, qingtianv1.GroupVersion.WithKind("QingTianCluster")),
 		},
+		Labels: map[string]string{
+			"app":        "qingtian",
+			"component":  "apiserver",
+			"cluster":    cluster.Name,
+			"version":    cluster.Spec.Version,
+		},
+	},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
@@ -114,7 +113,6 @@ func (r *QingTianClusterReconciler) ensureApiserver(
 							},
 						},
 					},
-					},
 					Volumes: []corev1.Volume{
 						{
 							Name: "config",
@@ -128,8 +126,8 @@ func (r *QingTianClusterReconciler) ensureApiserver(
 						},
 					},
 				},
+			},
 		},
-	},
 	}
 
 	if err := r.Create(ctx, dep); err != nil {
@@ -182,7 +180,6 @@ func (r *QingTianClusterReconciler) ensureApiserverService(
 				"cluster":   cluster.Name,
 			},
 		},
-	},
 	}
 
 	if err := r.Create(ctx, svc); err != nil {
@@ -240,7 +237,7 @@ func (r *QingTianClusterReconciler) ensureAgentDaemonSet(
 					Containers: []corev1.Container{
 						{
 							Name:  "qingtian-agent",
-							Image: "qingtian/agent:latest", // TODO: use version from config
+							Image: "qingtian/agent:latest",
 							Env: []corev1.EnvVar{
 								{
 									Name:  "QT_CONTROL_PLANE_URL",
@@ -267,12 +264,10 @@ func (r *QingTianClusterReconciler) ensureAgentDaemonSet(
 					},
 				},
 			},
-			},
 			UpdateStrategy: appsv1.DaemonSetUpdateStrategy{
 				Type: appsv1.RollingUpdateDaemonSetStrategyType,
 			},
 		},
-	},
 	}
 
 	if err := r.Create(ctx, ds); err != nil {
@@ -340,14 +335,12 @@ func (r *QingTianClusterReconciler) ensureMongoDB(
 				},
 			},
 		},
-	},
 	}
 
 	if err := r.Create(ctx, ss); err != nil {
 		return err
 	}
 
-	// Create Service for MongoDB
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -368,7 +361,6 @@ func (r *QingTianClusterReconciler) ensureMongoDB(
 				},
 			},
 		},
-	},
 	}
 	if err := r.Create(ctx, svc); err != nil {
 		return err
@@ -433,7 +425,6 @@ func (r *QingTianClusterReconciler) ensureRedis(
 				},
 			},
 		},
-	},
 	}
 
 	if err := r.Create(ctx, dep); err != nil {
@@ -460,7 +451,6 @@ func (r *QingTianClusterReconciler) ensureRedis(
 				},
 			},
 		},
-	},
 	}
 	if err := r.Create(ctx, svc); err != nil {
 		return err

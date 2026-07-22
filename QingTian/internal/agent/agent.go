@@ -2,14 +2,22 @@
 package agent
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"qingtian/internal/domain"
 	"qingtian/internal/mq"
+	"qingtian/internal/storage"
 )
 
 // ControlPlane 定义 Agent 与控制面的交互能力（注册与心跳）。
@@ -43,6 +51,8 @@ type RegisterInfo struct {
 //   - interval:  心跳间隔。
 //   - log:       日志器。
 //   - nodeID:    注册后分配的节点 ID。
+//   - workDir:    任务工作目录根，每个任务创建子目录。
+//   - store:      对象存储，用于归档训练产物。
 type Agent struct {
 	hostname  string
 	ip        string
@@ -54,6 +64,8 @@ type Agent struct {
 	interval  time.Duration
 	log       *slog.Logger
 	nodeID    string
+	workDir   string
+	store     storage.ObjectStore
 
 	// running 记录正在执行任务的取消函数，键为任务 ID。
 	// 收到控制面的终止指令时，据此取消对应任务的执行上下文。
@@ -66,6 +78,8 @@ type Config struct {
 	Hostname          string
 	IP                string
 	HeartbeatInterval time.Duration
+	WorkDir           string              // 任务工作目录根路径
+	ObjectStore       storage.ObjectStore // 对象存储，用于归档训练产物
 }
 
 // New 创建 Agent。
@@ -89,6 +103,8 @@ func New(cfg Config, collector Collector, executor Executor, cp ControlPlane, pr
 		consumer:  consumer,
 		interval:  cfg.HeartbeatInterval,
 		log:       log,
+		workDir:   cfg.WorkDir,
+		store:     cfg.ObjectStore,
 		running:   make(map[string]context.CancelFunc),
 	}
 }
@@ -190,6 +206,23 @@ func (a *Agent) handleDispatch(ctx context.Context, body []byte) error {
 		return nil
 	}
 
+	// 任务执行成功且指定了产物路径，尝试打包上传产物到对象存储
+	if result.ExitCode == 0 && result.Err == nil && msg.ArtifactsPath != "" && a.store != nil {
+		artifactPath := filepath.Join(a.workDir, msg.TaskID, msg.ArtifactsPath)
+		if _, err := os.Stat(artifactPath); !os.IsNotExist(err) {
+			objectPath := fmt.Sprintf("artifacts/%s/%s.tgz", msg.TaskID, msg.TaskID)
+			if err := a.packAndUploadArtifacts(ctx, artifactPath, objectPath); err != nil {
+				a.log.Error("产物上传失败", "task_id", msg.TaskID, "error", err)
+			} else {
+				a.log.Info("产物上传成功", "task_id", msg.TaskID, "object_path", objectPath)
+				// TODO: 需要回调控制面更新产物归档路径
+				// 由于控制面已经标记任务成功，这里只记录日志，后续可以通过状态回调更新
+			}
+		} else {
+			a.log.Info("产物路径不存在，跳过上传", "task_id", msg.TaskID, "path", artifactPath)
+		}
+	}
+
 	// 根据退出码回传终态。
 	if result.ExitCode == 0 && result.Err == nil {
 		a.reportStatus(ctx, msg.TaskID, domain.TaskSucceeded, 0, "任务执行成功", result.Output)
@@ -201,6 +234,58 @@ func (a *Agent) handleDispatch(ctx context.Context, body []byte) error {
 		a.reportStatus(ctx, msg.TaskID, domain.TaskFailed, result.ExitCode, reason, result.Output)
 	}
 	return nil
+}
+
+// packAndUploadArtifacts 将指定目录打包为 tgz 并上传到对象存储。
+func (a *Agent) packAndUploadArtifacts(ctx context.Context, sourceDir, objectPath string) error {
+	// 创建内存缓冲区写入压缩包
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+
+	// 遍历源目录并添加到 tar
+	err := filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			header, err := tar.FileInfoHeader(info, "")
+			if err != nil {
+				return err
+			}
+			// 计算相对路径
+			relPath, err := filepath.Rel(filepath.Dir(sourceDir), path)
+			if err != nil {
+				relPath = filepath.Base(path)
+			}
+			header.Name = relPath
+			if err := tw.WriteHeader(header); err != nil {
+				return err
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = io.Copy(tw, f)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	// 关闭 tar 和 gzip writer
+	if err := tw.Close(); err != nil {
+		return err
+	}
+	if err := gz.Close(); err != nil {
+		return err
+	}
+
+	// 上传到对象存储
+	size := int64(buf.Len())
+	return a.store.Put(ctx, objectPath, bytes.NewReader(buf.Bytes()), size)
 }
 
 // reportStatus 通过消息队列向控制面回传任务状态。

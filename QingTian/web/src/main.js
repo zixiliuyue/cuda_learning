@@ -14,8 +14,12 @@ app.use(createPinia())
 app.use(router)
 app.use(i18n)      // 注册 vue-i18n
 
-// 挂载前应用已持久化的主题，避免首屏闪烁(先亮后暗)。
-// 需在 pinia 注册之后调用，否则 store 不可用。
+// DOM 加载后应用已持久化的主题，避免首屏闪烁(先亮后暗)。
+// 需确保 document.body 存在，挂载后立即执行不影响视觉。
+app.mount('#app')
 useUiStore().initTheme()
 
-app.mount('#app')
+// 为 html 添加暗色模式背景，防止滚动区域露出底色不匹配
+if (document.documentElement.getAttribute('arco-theme') === null) {
+  document.documentElement.classList.toggle('arco-dark', useUiStore().theme === 'dark')
+}

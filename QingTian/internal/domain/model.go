@@ -4,7 +4,10 @@
 // 这里只包含数据结构与不依赖外部服务的领域规则（如任务状态机）。
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Role 表示用户角色，用于 RBAC 授权。
 type Role string
@@ -228,6 +231,9 @@ const (
 //   - GangID:        Gang（成组调度）标识，同组任务共享该 ID。
 //   - TimeoutSeconds: 运行超时秒数；>0 时超过该时长仍未结束将被强制终止（0 表示不限）。
 //   - Preemptible:   是否可被高优先级任务抢占（竞价/Spot 语义）。
+//   - MaxRetries:    最大自动重试次数；>0 时失败后会自动重试直到达到此次数。
+//   - Retries:       已重试次数。
+//   - LastRetryAt:   最后一次重试时间。
 //   - ExitCode:      进程退出码（结束后有效）。
 //   - Message:       附加信息（如失败原因）。
 //   - FailureCategory: 结构化失败归类，供失败诊断展示。
@@ -245,13 +251,18 @@ type Task struct {
 	Status          TaskStatus      `json:"status" bson:"status"`
 	NodeID          string          `json:"node_id" bson:"node_id"`
 	AllocatedGPUs   []string        `json:"allocated_gpus" bson:"allocated_gpus"`
-	DatasetPath     string          `json:"dataset_path" bson:"dataset_path"`
-	ResultPath      string          `json:"result_path" bson:"result_path"`
-	LogPath         string          `json:"log_path,omitempty" bson:"log_path,omitempty"`
-	CheckpointPath  string          `json:"checkpoint_path,omitempty" bson:"checkpoint_path,omitempty"`
-	GangID          string          `json:"gang_id,omitempty" bson:"gang_id,omitempty"`
+	DatasetPath          string          `json:"dataset_path" bson:"dataset_path"`
+	ResultPath           string          `json:"result_path" bson:"result_path"`
+	LogPath              string          `json:"log_path,omitempty" bson:"log_path,omitempty"`
+	ArtifactsPath        string          `json:"artifacts_path,omitempty" bson:"artifacts_path,omitempty"`
+	ArtifactsArchivedPath string        `json:"artifacts_archived_path,omitempty" bson:"artifacts_archived_path,omitempty"`
+	CheckpointPath       string          `json:"checkpoint_path,omitempty" bson:"checkpoint_path,omitempty"`
+	GangID               string          `json:"gang_id,omitempty" bson:"gang_id,omitempty"`
 	TimeoutSeconds  int64           `json:"timeout_seconds,omitempty" bson:"timeout_seconds,omitempty"`
 	Preemptible     bool            `json:"preemptible,omitempty" bson:"preemptible,omitempty"`
+	MaxRetries      int             `json:"max_retries,omitempty" bson:"max_retries,omitempty"`
+	Retries         int             `json:"retries" bson:"retries"`
+	LastRetryAt     *time.Time      `json:"last_retry_at,omitempty" bson:"last_retry_at,omitempty"`
 	ExitCode        int             `json:"exit_code" bson:"exit_code"`
 	Message         string          `json:"message" bson:"message"`
 	FailureCategory FailureCategory `json:"failure_category,omitempty" bson:"failure_category,omitempty"`
@@ -497,4 +508,312 @@ type TerminalMessage struct {
 	Data    string `json:"data,omitempty"`
 	Rows    uint16 `json:"rows,omitempty"`
 	Cols    uint16 `json:"cols,omitempty"`
+}
+
+// ==== 工作流编排相关领域模型 ====
+
+// WorkflowStatus 工作流定义状态
+type WorkflowStatus string
+
+const (
+	WorkflowStatusDraft     WorkflowStatus = "draft"     // 草稿，不可执行
+	WorkflowStatusActive    WorkflowStatus = "active"    // 活跃，可以执行
+	WorkflowStatusArchived WorkflowStatus = "archived" // 已归档，不再执行
+)
+
+// Workflow 工作流定义
+// 由多个任务节点组成 DAG，定义任务执行顺序和依赖关系
+type Workflow struct {
+	ID          string              `json:"id" bson:"_id"`
+	Name        string              `json:"name" bson:"name"`
+	Description string              `json:"description" bson:"description"`
+	Version     string              `json:"version" bson:"version"`
+
+	// 工作流定义
+	Tasks       []WorkflowTask      `json:"tasks" bson:"tasks"`       // 任务列表
+	Edges       []Edge              `json:"edges" bson:"edges"`       // 依赖边
+
+	// 参数定义
+	Parameters  []Parameter         `json:"parameters" bson:"parameters"` // 可传入参数
+
+	// 元数据
+	Labels      map[string]string   `json:"labels" bson:"labels"`
+	CreatedBy   string              `json:"createdBy" bson:"createdBy"`
+	CreatedAt   time.Time           `json:"createdAt" bson:"createdAt"`
+	UpdatedAt   time.Time           `json:"updatedAt" bson:"updatedAt"`
+
+	// 状态
+	Status      WorkflowStatus      `json:"status" bson:"status"` // draft/active/archived
+}
+
+// WorkflowTask 工作流中的单个任务节点
+type WorkflowTask struct {
+	ID          string            `json:"id" bson:"id"`
+	Name        string            `json:"name" bson:"name"`
+	Description string            `json:"description" bson:"description"`
+
+	// 任务配置
+	Image       string            `json:"image" bson:"image"`
+	Command     []string          `json:"command" bson:"command"`
+	Args        []string          `json:"args" bson:"args"`
+	Env         map[string]string `json:"env" bson:"env"`
+
+	// 资源需求
+	Resources   ResourceSpec       `json:"resources" bson:"resources"`
+
+	// 执行配置
+	Timeout     Duration          `json:"timeout" bson:"timeout"`
+	Retries     int               `json:"retries" bson:"retries"`
+	RetryDelay  Duration          `json:"retryDelay" bson:"retryDelay"`
+
+	// 条件执行
+	Condition   string            `json:"condition" bson:"condition"`
+
+	// 输入输出
+	Inputs      []Input           `json:"inputs" bson:"inputs"`
+	Outputs     []Output          `json:"outputs" bson:"outputs"`
+}
+
+// Edge 依赖边，表示任务之间的依赖关系
+type Edge struct {
+	From      string `json:"from" bson:"from"`
+	To        string `json:"to" bson:"to"`
+	Condition string `json:"condition,omitempty" bson:"condition,omitempty"`
+}
+
+// Parameter 参数定义
+type Parameter struct {
+	Name        string      `json:"name" bson:"name"`
+	Description string      `json:"description" bson:"description"`
+	Type        string      `json:"type" bson:"type"` // string/int/float/bool
+	Default     interface{} `json:"default" bson:"default"`
+	Required    bool        `json:"required" bson:"required"`
+}
+
+// ResourceSpec 资源规格
+type ResourceSpec struct {
+	GPUCount  int    `json:"gpuCount" bson:"gpuCount"`
+	GPUMemory string `json:"gpuMemory" bson:"gpuMemory"`
+	GPUModel  string `json:"gpuModel" bson:"gpuModel"`
+	CPU       string `json:"cpu" bson:"cpu"`
+	Memory    string `json:"memory" bson:"memory"`
+}
+
+// Input 任务输入
+type Input struct {
+	Name     string `json:"name" bson:"name"`
+	From     string `json:"from" bson:"from"`       // 来自哪个上游任务的哪个输出
+	Default  string `json:"default" bson:"default"` // 默认值（参数）
+	Required bool   `json:"required" bson:"required"`
+}
+
+// Output 任务输出
+type Output struct {
+	Name string `json:"name" bson:"name"`
+	Path string `json:"path" bson:"path"` // 输出路径（对象存储位置）
+	Type string `json:"type" bson:"type"`   // 类型：file/parameter/result
+}
+
+// Duration 可序列化 duration 包装
+type Duration struct {
+	Duration time.Duration `json:"duration"`
+}
+
+// UnmarshalJSON 反序列化 JSON
+func (d *Duration) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	dur, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	d.Duration = dur
+	return nil
+}
+
+// MarshalJSON 序列化 JSON
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.Duration.String())
+}
+
+// WorkflowRunStatus 工作流执行实例状态
+type WorkflowRunStatus string
+
+const (
+	WorkflowRunStatusPending   WorkflowRunStatus = "Pending"   // 等待执行
+	WorkflowRunStatusRunning   WorkflowRunStatus = "Running"   // 正在运行
+	WorkflowRunStatusSucceeded WorkflowRunStatus = "Succeeded" // 执行成功
+	WorkflowRunStatusFailed    WorkflowRunStatus = "Failed"    // 执行失败
+	WorkflowRunStatusCanceled  WorkflowRunStatus = "Canceled"  // 已取消
+)
+
+// TaskRunStatus 任务执行实例状态
+type TaskRunStatus string
+
+const (
+	TaskRunStatusPending   TaskRunStatus = "Pending"
+	TaskRunStatusRunning   TaskRunStatus = "Running"
+	TaskRunStatusSucceeded TaskRunStatus = "Succeeded"
+	TaskRunStatusFailed    TaskRunStatus = "Failed"
+	TaskRunStatusCanceled  TaskRunStatus = "Canceled"
+	TaskRunStatusSkipped  TaskRunStatus = "Skipped"
+)
+
+// WorkflowRun 工作流执行实例
+type WorkflowRun struct {
+	ID          string                  `json:"id" bson:"_id"`
+	WorkflowID  string                  `json:"workflowId" bson:"workflowId"`
+	Name        string                  `json:"name" bson:"name"`
+
+	// 参数值
+	Parameters map[string]interface{} `json:"parameters" bson:"parameters"`
+
+	// 状态
+	Status      WorkflowRunStatus      `json:"status" bson:"status"`
+
+	// 执行信息
+	StartedAt  *time.Time            `json:"startedAt" bson:"startedAt"`
+	FinishedAt *time.Time            `json:"finishedAt" bson:"finishedAt"`
+	Duration   time.Duration         `json:"duration" bson:"duration"`
+
+	// 任务执行实例
+	TaskRuns []TaskRun              `json:"taskRuns" bson:"taskRuns"`
+
+	// 触发信息
+	Trigger TriggerInfo             `json:"trigger" bson:"trigger"`
+
+	// 元数据
+	CreatedBy string                  `json:"createdBy" bson:"createdBy"`
+	CreatedAt time.Time             `json:"createdAt" bson:"createdAt"`
+
+	// 结果
+	Outputs map[string]interface{} `json:"outputs" bson:"outputs"`
+	Message string                  `json:"message" bson:"message"`
+}
+
+// TaskRun 单个任务的执行实例
+type TaskRun struct {
+	ID           string          `json:"id" bson:"id"`
+	TaskID       string          `json:"taskId" bson:"taskId"`
+	TaskName     string          `json:"taskName" bson:"taskName"`
+
+	// 关联的原生 QingTian 任务 ID
+	NativeTaskID string          `json:"nativeTaskId" bson:"nativeTaskId"`
+
+	// 状态
+	Status       TaskRunStatus     `json:"status" bson:"status"`
+
+	// 执行信息
+	StartedAt  *time.Time        `json:"startedAt" bson:"startedAt"`
+	FinishedAt *time.Time        `json:"finishedAt" bson:"finishedAt"`
+	Duration   time.Duration     `json:"duration" bson:"duration"`
+
+	// 重试信息
+	RetryCount int               `json:"retryCount" bson:"retryCount"`
+
+	// 节点信息
+	NodeID string                `json:"nodeId" bson:"nodeId"`
+
+	// 输入输出
+	Inputs  map[string]interface{} `json:"inputs" bson:"inputs"`
+	Outputs map[string]interface{} `json:"outputs" bson:"outputs"`
+
+	// 日志和错误
+	LogPath string                `json:"logPath" bson:"logPath"`
+	Error  string                `json:"error" bson:"error"`
+}
+
+// ConcurrencyPolicy 定时调度并发策略
+type ConcurrencyPolicy string
+
+const (
+	ConcurrencyPolicyAllow   ConcurrencyPolicy = "Allow"   // 允许并发，多个实例同时运行
+	ConcurrencyPolicyForbid  ConcurrencyPolicy = "Forbid"  // 禁止并发，如果已有实例在运行，跳过新执行
+	ConcurrencyPolicyReplace ConcurrencyPolicy = "Replace" // 替换，停止正在运行的实例，启动新的
+)
+
+// ScheduleStatus 定时计划状态
+type ScheduleStatus string
+
+const (
+	ScheduleStatusActive  ScheduleStatus = "active"
+	ScheduleStatusPaused ScheduleStatus = "paused"
+	ScheduleStatusError  ScheduleStatus = "error"
+)
+
+// Schedule 定时计划
+type Schedule struct {
+	ID             string                `json:"id" bson:"_id"`
+	Name           string                `json:"name" bson:"name"`
+	Description    string                `json:"description" bson:"description"`
+
+	// 关联的工作流
+	WorkflowID     string                `json:"workflowId" bson:"workflowId"`
+
+	// Cron 表达式
+	CronExpr string              `json:"cronExpr" bson:"cronExpr"`
+
+	// 时区
+	Timezone string              `json:"timezone" bson:"timezone"`
+
+	// 参数
+	Parameters map[string]interface{} `json:"parameters" bson:"parameters"`
+
+	// 执行配置
+	ConcurrencyPolicy       ConcurrencyPolicy `json:"concurrencyPolicy" bson:"concurrencyPolicy"`
+	SuccessfulJobsHistoryLimit int               `json:"successfulJobsHistoryLimit" bson:"successfulJobsHistoryLimit"`
+	FailedJobsHistoryLimit    int               `json:"failedJobsHistoryLimit" bson:"failedJobsHistoryLimit"`
+
+	// 状态
+	Enabled bool          `json:"enabled" bson:"enabled"`
+	Status  ScheduleStatus `json:"status" bson:"status"`
+
+	// 上次执行
+	LastRunAt   *time.Time `json:"lastRunAt" bson:"lastRunAt"`
+	LastRunID   string    `json:"lastRunId" bson:"lastRunId"`
+
+	// 下次执行
+	NextRunAt   *time.Time `json:"nextRunAt" bson:"nextRunAt"`
+
+	// 元数据
+	CreatedBy string        `json:"createdBy" bson:"createdBy"`
+	CreatedAt time.Time     `json:"createdAt" bson:"createdAt"`
+	UpdatedAt time.Time     `json:"updatedAt" bson:"updatedAt"`
+}
+
+// TriggerInfo 触发信息，记录是谁/为什么触发了这次执行
+type TriggerInfo struct {
+	Type        string    `json:"type" bson:"type"` // manual/schedule/webhook
+	ScheduleID  string    `json:"scheduleId,omitempty" bson:"scheduleId,omitempty"`
+	TriggeredBy string    `json:"triggeredBy" bson:"triggeredBy"`
+	TriggeredAt time.Time `json:"triggeredAt" bson:"triggeredAt"`
+}
+
+// Feature 功能开关，用于企业版功能门控
+type Feature string
+
+const (
+	FeatureMultiTenancy  Feature = "multi_tenancy"  // 多租户/项目管理
+	FeatureMetering      Feature = "metering"        // 计量计费
+	FeatureTemplate      Feature = "template"       // 任务模板
+	FeatureTerminal      Feature = "terminal"       // Web 终端
+	FeatureAutoScaling   Feature = "auto_scaling"    // 自动扩缩容
+	FeatureIdleReclaim  Feature = "idle_reclaim"  // 空闲节点回收
+	FeatureSharding     Feature = "sharding"       // 调度分片水平扩展
+	FeatureOIDC         Feature = "oidc"           // OIDC SSO 单点登录
+	// 工作流编排默认就是企业版功能
+	FeatureWorkflow     Feature = "workflow"       // DAG 工作流编排
+	// 定时调度默认就是企业版功能
+	FeatureScheduling   Feature = "scheduling"     // Cron 定时任务调度
+)
+
+// FeatureEnabled 检查给定 edition 是否启用了该功能
+func FeatureEnabled(edition Edition, feature Feature) bool {
+	if edition == EditionEnterprise {
+		return true
+	}
+	// 社区版默认不启用高级功能
+	return false
 }

@@ -20,7 +20,7 @@ func TestCanTransition(t *testing.T) {
 		{"running到succeeded合法", TaskRunning, TaskSucceeded, true},
 		{"running到failed合法", TaskRunning, TaskFailed, true},
 		{"succeeded为终态不可转移", TaskSucceeded, TaskRunning, false},
-		{"failed为终态不可转移", TaskFailed, TaskPending, false},
+		{"failed允许转移到pending用于自动重试", TaskFailed, TaskPending, true},
 		{"canceled为终态不可转移", TaskCanceled, TaskRunning, false},
 	}
 	for _, c := range cases {

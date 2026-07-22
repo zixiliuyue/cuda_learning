@@ -154,7 +154,9 @@ type SubmitRequest struct {
 	ShareMode      domain.ShareMode      `json:"share_mode"`
 	TimeoutSeconds int64                  `json:"timeout_seconds"`
 	Preemptible    bool                   `json:"preemptible"`
+	MaxRetries     int                    `json:"max_retries,omitempty"` // 最大自动重试次数，0 表示不重试
 	DatasetPath    string                 `json:"dataset_path"`
+	ArtifactsPath  string                 `json:"artifacts_path,omitempty"` // 训练产物输出路径（任务工作目录相对路径）
 	ProjectID      string                 `json:"project_id"`
 	GangSize       int                    `json:"gang_size"` // 成组调度需要多少份数（分布式训练需要 N 个节点各跑一份）
 	NodeSelector   *domain.NodeSelector   `json:"node_selector,omitempty"` // 节点标签选择约束
@@ -201,16 +203,19 @@ func (s *TaskService) Submit(ctx context.Context, owner string, req SubmitReques
 			NodeSelector: req.NodeSelector,
 			Tolerations:  req.Tolerations,
 		},
-		Priority:       req.Priority,
-		Status:         domain.TaskPending,
-		DatasetPath:    req.DatasetPath,
-		ResultPath:     "results/" + req.Name + "/",
-		LogPath:        "logs/" + req.Name + ".log",
-		CheckpointPath: "",
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		TimeoutSeconds: req.TimeoutSeconds,
-		Preemptible:    req.Preemptible,
+		Priority:        req.Priority,
+		Status:          domain.TaskPending,
+		DatasetPath:     req.DatasetPath,
+		ResultPath:      "results/" + req.Name + "/",
+		LogPath:         "logs/" + req.Name + ".log",
+		ArtifactsPath:    req.ArtifactsPath,
+		CheckpointPath:  "",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		TimeoutSeconds:  req.TimeoutSeconds,
+		Preemptible:     req.Preemptible,
+		MaxRetries:      req.MaxRetries,
+		Retries:         0,
 	}
 	if err := s.repo.Create(ctx, task); err != nil {
 		return nil, err
@@ -381,6 +386,7 @@ func (s *TaskService) ScheduleOnce(ctx context.Context) (bool, error) {
 			AllocatedGPUs:  task.AllocatedGPUs,
 			DatasetPath:    task.DatasetPath,
 			ResultPath:     task.ResultPath,
+			ArtifactsPath:  task.ArtifactsPath,
 			ShareMode:      string(decision.ShareMode),
 			CheckpointPath: task.CheckpointPath,
 		}
@@ -686,6 +692,29 @@ func (s *TaskService) onTaskFinished(ctx context.Context, task *domain.Task) {
 		return
 	}
 
+	// 自动重试：如果任务失败、还有剩余重试次数，自动重新入队重试
+	if task.Status == domain.TaskFailed && task.MaxRetries > 0 && task.Retries < task.MaxRetries {
+		now := s.now()
+		task.Retries++
+		task.LastRetryAt = &now
+		// 重置状态为 pending，清除调度信息
+		task.Status = domain.TaskPending
+		task.NodeID = ""
+		task.AllocatedGPUs = nil
+		task.StartedAt = nil
+		task.FinishedAt = nil
+		task.UpdatedAt = now
+		task.Message = fmt.Sprintf("第 %d 次重试，上次失败: %s", task.Retries, task.Message)
+		// 更新数据库
+		if err := s.repo.Update(ctx, task); err != nil {
+			s.onTaskFinished(ctx, task)
+		} else {
+			// 重新入队等待调度
+			_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+		}
+		// 计量和通知仍正常执行
+	}
+
 	// 计量：累加用量到配额
 	if s.metering != nil && s.quota != nil {
 		if task.StartedAt != nil && task.FinishedAt != nil {
@@ -706,8 +735,8 @@ func (s *TaskService) onTaskFinished(ctx context.Context, task *domain.Task) {
 	// 通知：任务终态主动触达用户。
 	if s.notifier != nil {
 		title := fmt.Sprintf("任务 %s 已%s", task.Name, statusText(task.Status))
-		content := fmt.Sprintf("任务 ID: %s\n状态: %s\n退出码: %d\n说明: %s",
-			task.ID, task.Status, task.ExitCode, task.Message)
+		content := fmt.Sprintf("任务 ID: %s\n状态: %s\n退出码: %d\n已重试: %d/%d\n说明: %s",
+			task.ID, task.Status, task.ExitCode, task.Retries, task.MaxRetries, task.Message)
 		_ = s.notifier.Notify(ctx, notify.Message{Title: title, Content: content})
 	}
 }
@@ -878,6 +907,74 @@ func (s *TaskService) EnforceTimeouts(ctx context.Context) (int, error) {
 			continue
 		}
 		killed++
+	}
+	return killed, nil
+}
+
+// EnforceZombieDetection 扫描全部运行中任务，检测并回收僵尸任务。
+//
+// 僵尸任务定义：任务处于运行状态，但分配给它的所有 GPU 利用率持续低于
+// 阈值超过指定时长，说明任务实际已卡住不干活了但进程还在占用资源。
+// 该方法由守护循环周期性调用，自动回收这类泄漏的资源。
+//
+// 参数：
+//   - ctx: 上下文。
+//   - idleThresholdUtil: 利用率阈值（百分比），低于此值认为空闲
+//   - idleThresholdDuration: 持续空闲多久才触发回收
+//
+// 返回值：
+//   - int:   本轮被回收的僵尸任务数。
+//   - error: 遍历任务失败时返回。
+func (s *TaskService) EnforceZombieDetection(ctx context.Context, idleThresholdUtil int, idleThresholdDuration time.Duration) (int, error) {
+	running, err := s.repo.List(ctx, domain.TaskRunning)
+	if err != nil {
+		return 0, err
+	}
+	now := s.now()
+	killed := 0
+
+	for _, task := range running {
+		if task.NodeID == "" || task.StartedAt == nil {
+			continue
+		}
+
+		// 任务刚开始运行，还没达到最小检测时长，跳过
+		if now.Sub(*task.StartedAt) < idleThresholdDuration {
+			continue
+		}
+
+		node, err := s.nodeRepo.GetByID(ctx, task.NodeID)
+		if err != nil {
+			continue // 节点不存在，会被 ReconcileNodeFailures 处理
+		}
+
+		// 计算任务分配到的 GPU 的平均利用率
+		var totalUtil int
+		var count int
+		for _, allocGPU := range task.AllocatedGPUs {
+			for _, gpu := range node.GPUs {
+				if gpu.UUID == allocGPU {
+					totalUtil += gpu.Utilization
+					count++
+					break
+				}
+			}
+		}
+
+		if count == 0 {
+			continue // 没有找到分配的 GPU，跳过
+		}
+
+		avgUtil := totalUtil / count
+		if avgUtil < idleThresholdUtil {
+			// 利用率持续低于阈值，判定为僵尸任务
+			reason := fmt.Sprintf("僵尸任务检测：分配的 GPU 平均利用率 %.1f%% 持续低于阈值 %d%% 超过 %v，已被强制回收",
+				float64(avgUtil), idleThresholdUtil, idleThresholdDuration)
+			if err := s.terminateActiveTask(ctx, task, domain.FailureTimeout, reason); err != nil {
+				continue
+			}
+			killed++
+		}
 	}
 	return killed, nil
 }

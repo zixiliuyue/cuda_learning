@@ -1,0 +1,32 @@
+	// 下发任务到目标节点
+			msg := mq.DispatchMessage{
+				TaskID:         task.ID,
+				NodeID:         decision.NodeID,
+				Image:          task.Image,
+				Command:        task.Command,
+				Env:            task.Env,
+				AllocatedGPUs:  task.AllocatedGPUs,
+				DatasetPath:    task.DatasetPath,
+				ResultPath:     task.ResultPath,
+				ArtifactsPath:  task.ArtifactsPath,
+				ShareMode:      string(decision.ShareMode),
+				CheckpointPath: task.CheckpointPath,
+			}
+			body, err := json.Marshal(msg)
+			if err != nil {
+				// 序列化失败，回滚分配
+				s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
+				task.Status = domain.TaskPending
+				task.NodeID = ""
+				task.AllocatedGPUs = nil
+				task.UpdatedAt = s.now()
+				_ = s.repo.Update(ctx, task)
+				_ = s.queue.Push(ctx, task.ID, float64(task.Priority))
+				// 补偿完成，返回已处理（processed=true）但 err=nil，因为这一轮调度已经完成
+				return true, nil
+			}
+			if err := s.producer.Publish(ctx, mq.TaskDispatchTopic(decision.NodeID), body); err != nil {
+				// 下发失败，回滚分配，将任务放回 pending 重新排队
+				s.sched.ReleaseTask(decision.AllocatedGPUs, task.Resource.MemoryMB)
+				task.Status = domain.TaskPending
+				task.NodeID = ""

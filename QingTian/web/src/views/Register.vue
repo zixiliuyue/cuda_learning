@@ -1,14 +1,16 @@
 <script setup>
 // 用户注册页：新用户填写用户名密码注册，成功跳转登录。
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { authApi } from '../api'
+import { useUiStore } from '../store/ui'
 import LocaleThemeSwitch from '../components/LocaleThemeSwitch.vue'
 
 const { t } = useI18n()
 const router = useRouter()
+const ui = useUiStore()
 
 const form = ref({
   username: '',
@@ -16,6 +18,15 @@ const form = ref({
   confirmPassword: '',
 })
 const loading = ref(false)
+
+// 注册页背景渐变根据主题和主题色变化
+import { THEME_COLORS } from '../store/ui'
+const registerBackground = computed(() => {
+  const primaryColor = THEME_COLORS[ui.themeColor]?.primary || THEME_COLORS.blue.primary
+  return ui.theme === 'dark'
+    ? `linear-gradient(135deg, #1d2129 0%, ${primaryColor} 100%)`
+    : 'linear-gradient(135deg, #f2f3f5 0%, #86909c 100%)'
+})
 
 // 处理注册提交。
 async function handleRegister() {
@@ -42,7 +53,7 @@ async function handleRegister() {
 </script>
 
 <template>
-  <div class="register-wrap">
+  <div class="register-wrap" :style="{ background: registerBackground }">
     <a-card class="register-card" :bordered="false">
       <!-- 右上角语言/主题切换 -->
       <div class="switch-bar">
@@ -77,7 +88,7 @@ async function handleRegister() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #1d2129 0%, #165dff 100%);
+  transition: background 0.3s ease;
 }
 .register-card {
   position: relative;
@@ -97,7 +108,7 @@ async function handleRegister() {
 }
 .brand h1 {
   margin: 0;
-  color: #165dff;
+  color: var(--color-primary);
 }
 .brand p {
   margin: 4px 0 0;
@@ -109,7 +120,7 @@ async function handleRegister() {
   color: var(--color-text-3);
 }
 .to-login a {
-  color: #165dff;
+  color: var(--color-primary);
   text-decoration: none;
 }
 </style>

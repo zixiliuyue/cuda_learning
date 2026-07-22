@@ -111,6 +111,13 @@ func runSchedulerLoop(ctx context.Context, log logInterface, cfg *config.Config,
 			} else if killed > 0 {
 				log.Info("已终止超时任务", "count", killed)
 			}
+			// 僵尸任务检测：回收 GPU 利用率持续低于阈值的僵尸任务
+			if killed, err := taskSvc.EnforceZombieDetection(ctx,
+				cfg.Scheduler.IdleThresholdUtil, cfg.Scheduler.IdleThresholdDuration); err != nil {
+				log.Error("僵尸任务检测巡检失败", "error", err)
+			} else if killed > 0 {
+				log.Info("已回收僵尸任务", "count", killed)
+			}
 			// 节点故障自动 reconciliation：将离线节点上的未完成任务放回排队重调度。
 			if moved, err := taskSvc.ReconcileNodeFailures(ctx); err != nil {
 				log.Error("节点故障重调度巡检失败", "error", err)

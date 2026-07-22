@@ -43,38 +43,86 @@ type Infra struct {
 // 注意事项：
 //   - 调用方在使用完毕后应调用 Infra.Close 释放资源。
 func Connect(ctx context.Context, cfg *config.Config) (*Infra, error) {
-	// MongoDB
-	mctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	mclient, err := mongo.Connect(mctx, options.Client().ApplyURI(cfg.Mongo.URI))
-	if err != nil {
-		return nil, err
+	// MongoDB: 重试几次等待 MongoDB 就绪（Docker 启动顺序问题）
+	var mclient *mongo.Client
+	var err error
+	const maxRetries = 10
+	for range maxRetries {
+		mctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		mclient, err = mongo.Connect(mctx, options.Client().ApplyURI(cfg.Mongo.URI))
+		if err == nil {
+			err = mclient.Ping(mctx, nil)
+			cancel()
+			if err == nil {
+				break
+			}
+		}
+		cancel()
+		// 连接失败，等待一秒重试
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
 	}
-	if err := mclient.Ping(mctx, nil); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	store := repository.NewMongoStore(mclient.Database(cfg.Mongo.Database))
 
-	// Redis
-	rcache, err := cache.NewRedisCache(cfg.Redis)
-	if err != nil {
-		return nil, err
+	// Redis: 重试几次等待 Redis 就绪
+	var rcache *cache.RedisCache
+	for range maxRetries {
+		rcache, err = cache.NewRedisCache(cfg.Redis)
+		if err == nil {
+			err = rcache.Ping(ctx)
+			if err == nil {
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
 	}
-	if err := rcache.Ping(ctx); err != nil {
+	if err != nil {
 		return nil, err
 	}
 
 	// NSQ
-	producer, err := mq.NewNSQProducer(cfg.NSQ)
-	if err != nil {
-		return nil, err
+	var producer *mq.NSQProducer
+	for i := range maxRetries {
+		producer, err = mq.NewNSQProducer(cfg.NSQ)
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+		if i == maxRetries-1 {
+			return nil, err
+		}
 	}
 	consumer := mq.NewNSQConsumer(cfg.NSQ)
 
-	// MinIO
-	object, err := storage.NewMinIOStore(cfg.MinIO)
-	if err != nil {
-		return nil, err
+	// MinIO: 重试几次等待 MinIO 就绪
+	var object *storage.MinIOStore
+	for i := range maxRetries {
+		object, err = storage.NewMinIOStore(cfg.MinIO)
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+		if i == maxRetries-1 {
+			return nil, err
+		}
 	}
 
 	// 日志流（复用 Redis 连接配置，独立客户端）。

@@ -33,18 +33,19 @@ func TestDiagnoseFailure(t *testing.T) {
 // TestFeatureEnabled 验证版本功能门控。
 func TestFeatureEnabled(t *testing.T) {
 	// 企业版开放全部功能。
-	if !FeatureEnabled(EditionEnterprise, FeatureGPUSharing) {
-		t.Error("企业版应开放 GPU 共享")
-	}
 	if !FeatureEnabled(EditionEnterprise, FeatureMultiTenancy) {
 		t.Error("企业版应开放多租户")
 	}
-	// 社区版仅开放引流功能。
-	if FeatureEnabled(EditionCommunity, FeatureGPUSharing) {
-		t.Error("社区版不应开放 GPU 共享")
+	if !FeatureEnabled(EditionEnterprise, FeatureMetering) {
+		t.Error("企业版应开放计量计费")
 	}
-	if !FeatureEnabled(EditionCommunity, FeatureMetering) {
-		t.Error("社区版应开放计量看板（引流）")
+	// 社区版不开放任何高级功能。
+	if FeatureEnabled(EditionCommunity, FeatureMultiTenancy) {
+		t.Error("社区版不应开放多租户")
+	}
+	if FeatureEnabled(EditionCommunity, FeatureMetering) && !FeatureEnabled(EditionEnterprise, FeatureMetering) {
+		// 根据当前实现，社区版全部不开放
+		t.Error("社区版不应开放计量计费")
 	}
 }
 

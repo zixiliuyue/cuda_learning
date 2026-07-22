@@ -10,11 +10,12 @@ package v1
 
 import (
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // +genclient
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // QingTianCluster is the Schema for the qingtianclusters API
@@ -219,10 +220,6 @@ type QingTianClusterList struct {
 	Items           []QingTianCluster `json:"items"`
 }
 
-// GroupVersion is the API group version for QingTian operator
-var (
-	GroupVersion = schema.GroupVersion{
-		Group:   "qingtian.ai",
-		Version: "v1",
-	}
-)
+func init() {
+	SchemeBuilder.Register(&QingTianCluster{}, &QingTianClusterList{})
+}

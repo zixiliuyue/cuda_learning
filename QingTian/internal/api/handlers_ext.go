@@ -351,3 +351,31 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(text))
 }
+
+// handleTaskLogDownload 获取完整任务日志的预签名下载 URL。
+func (s *Server) handleTaskLogDownload(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, PermTaskView); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	id := r.PathValue("id")
+
+	task, err := s.tasks.Get(r.Context(), id)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+
+	if task.LogPath == "" {
+		httpx.WriteError(w, apperr.NotFound("日志尚未归档"))
+		return
+	}
+
+	url, err := s.storage.PresignDownload(r.Context(), task.LogPath)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"url": url})
+}

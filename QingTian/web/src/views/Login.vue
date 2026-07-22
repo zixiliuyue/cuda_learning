@@ -1,21 +1,45 @@
 <script setup>
 // 登录页：用户输入用户名密码登录，成功后保存令牌并跳转主页。
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Message } from '@arco-design/web-vue'
 import { authApi } from '../api'
 import { useAuthStore } from '../store/auth'
+import { useUiStore } from '../store/ui'
 import LocaleThemeSwitch from '../components/LocaleThemeSwitch.vue'
 
 const { t } = useI18n()
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
+const ui = useUiStore()
 const form = ref({ username: '', password: '' })
 const loading = ref(false)
 // 是否记住账号密码，勾选后凭据会保存在浏览器本地。
 const remember = ref(false)
+
+// 登录页背景渐变根据主题和主题色变化
+import { THEME_COLORS } from '../store/ui'
+const loginBackground = computed(() => {
+  const primaryColor = THEME_COLORS[ui.themeColor]?.primary || THEME_COLORS.blue.primary
+  const lightColor = adjustBrightness(primaryColor, 80)
+  return ui.theme === 'dark'
+    ? `linear-gradient(135deg, #1d2129 0%, ${primaryColor} 100%)`
+    : `linear-gradient(135deg, ${lightColor} 0%, ${primaryColor} 100%)`
+})
+
+// 调整 hex 颜色亮度，生成浅色调色板
+function adjustBrightness(hex, percent) {
+  hex = hex.replace(/^#/, '')
+  let r = parseInt(hex.substring(0, 2), 16)
+  let g = parseInt(hex.substring(2, 4), 16)
+  let b = parseInt(hex.substring(4, 6), 16)
+  r = Math.min(255, r + (255 - r) * percent / 100)
+  g = Math.min(255, g + (255 - g) * percent / 100)
+  b = Math.min(255, b + (255 - b) * percent / 100)
+  return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')
+}
 
 // localStorage 中保存记住密码凭据的键名。
 const REMEMBER_KEY = 'qingtian_remember_cred'
@@ -80,7 +104,7 @@ async function handleLogin() {
 </script>
 
 <template>
-  <div class="login-wrap">
+  <div class="login-wrap" :style="{ background: loginBackground }">
     <a-card class="login-card" :bordered="false">
       <!-- 右上角语言/主题切换 -->
       <div class="switch-bar">
@@ -115,7 +139,7 @@ async function handleLogin() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #1d2129 0%, #165dff 100%);
+  transition: background 0.3s ease;
 }
 .login-card {
   position: relative;
@@ -137,7 +161,7 @@ async function handleLogin() {
 }
 .brand h1 {
   margin: 0;
-  color: #165dff;
+  color: var(--color-primary);
 }
 .brand p {
   margin: 4px 0 0;
@@ -150,7 +174,7 @@ async function handleLogin() {
   color: var(--color-text-3);
 }
 .to-register a {
-  color: #165dff;
+  color: var(--color-primary);
   text-decoration: none;
 }
 </style>

@@ -75,10 +75,11 @@ type DispatchMessage struct {
 	Command        string        `json:"command"`
 	Env            []domain.EnvVar `json:"env,omitempty"`
 	AllocatedGPUs  []string      `json:"allocated_gpus"`
-	DatasetPath    string   `json:"dataset_path"`
-	ResultPath     string   `json:"result_path"`
-	ShareMode      string   `json:"share_mode,omitempty"`      // 共享模式（exclusive/memory/mig）
-	CheckpointPath string   `json:"checkpoint_path,omitempty"` // 断点续跑时恢复用的存档路径
+	DatasetPath    string        `json:"dataset_path"`
+	ResultPath     string        `json:"result_path"`
+	ArtifactsPath string        `json:"artifacts_path,omitempty"` // 需要打包上传的产物相对路径（任务工作目录下）
+	ShareMode      string        `json:"share_mode,omitempty"`      // 共享模式（exclusive/memory/mig）
+	CheckpointPath string        `json:"checkpoint_path,omitempty"` // 断点续跑时恢复用的存档路径
 }
 
 // StatusMessage 是任务状态回传消息体，由 Agent 发送给控制面。

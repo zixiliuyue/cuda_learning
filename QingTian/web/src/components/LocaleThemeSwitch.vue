@@ -1,9 +1,9 @@
 <script setup>
 // 语言 + 主题切换控件：登录页与主框架 header 复用，避免重复实现。
-// 语言用下拉选择，主题用图标按钮在亮/暗间切换。
+// 语言用下拉选择，主题包含颜色+亮暗在一个下拉选择。
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { IconMoonFill, IconSunFill, IconLanguage } from '@arco-design/web-vue/es/icon'
+import { IconLanguage, IconPalette } from '@arco-design/web-vue/es/icon'
 import { useUiStore } from '../store/ui'
 import { SUPPORTED_LOCALES } from '../i18n'
 
@@ -16,18 +16,25 @@ const currentLocale = computed({
   set: (v) => ui.setLocale(v),
 })
 
-// 是否暗色，用于切换图标与提示文案。
-const isDark = computed(() => ui.theme === 'dark')
+// 当前主题（包含颜色+亮暗）
+const currentThemeColor = computed({
+  get: () => ui.themeColor,
+  set: (v) => ui.setThemeColor(v),
+})
+
+// 可用主题列表
+const themeColorOptions = ui.getAvailableThemeColors()
 </script>
 
 <template>
-  <a-space :size="8">
+  <a-space :size="12">
     <!-- 语言选择：图标 + 下拉 -->
     <a-select
       v-model="currentLocale"
       :bordered="false"
       size="small"
       :style="{ width: '120px' }"
+      position="bl"
     >
       <template #prefix><icon-language /></template>
       <a-option v-for="l in SUPPORTED_LOCALES" :key="l.value" :value="l.value">
@@ -35,14 +42,28 @@ const isDark = computed(() => ui.theme === 'dark')
       </a-option>
     </a-select>
 
-    <!-- 主题切换：亮色显示月亮(点击转暗)，暗色显示太阳(点击转亮) -->
-    <a-tooltip :content="isDark ? t('switcher.toLight') : t('switcher.toDark')">
-      <a-button shape="circle" size="small" @click="ui.toggleTheme()">
-        <template #icon>
-          <icon-sun-fill v-if="isDark" />
-          <icon-moon-fill v-else />
+    <!-- 主题选择：调色板图标 + 下拉选择（颜色+亮暗合一） -->
+    <a-tooltip content="主题">
+      <a-select
+        v-model="currentThemeColor"
+        :bordered="false"
+        size="small"
+        :style="{ width: '180px' }"
+        position="bl"
+        :dropdown-style="{ minWidth: '180px' }"
+      >
+        <template #prefix>
+          <icon-palette :style="{ color: themeColorOptions.find(c => c.key === currentThemeColor)?.color, fontSize: '16px' }" />
         </template>
-      </a-button>
+        <a-option v-for="c in themeColorOptions" :key="c.key" :value="c.key">
+          <a-space :size="8">
+            <div
+              style="width: 18px; height: 18px; border-radius: 50%; background: {{ c.color }}; border: 1px solid rgba(0, 0, 0, 0.1);"
+            ></div>
+            <span>{{ c.name }}</span>
+          </a-space>
+        </a-option>
+      </a-select>
     </a-tooltip>
   </a-space>
 </template>

@@ -139,6 +139,9 @@ func main() {
 		WithTemplates(templateSvc).
 		WithTerminals(terminalMgr).
 		WithSSO(ssoSvc).
+		WithMetering(meteringSvc).
+		WithQuota(quotaSvc).
+		WithProjects(projectSvc).
 		WithEdition(domain.Edition(cfg.Edition)).
 		WithMetricsExporter(metricsExporter)
 	mux := server.Routes(api.AuthMiddleware(tokens))
@@ -146,6 +149,14 @@ func main() {
 
 	// Start idle node auto-reclamation scanner with scan interval 1min to balance timeliness and performance overhead.
 	go nodeSvc.StartIdleScanner(ctx, time.Minute)
+
+	// Start HTTP server in a goroutine
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("failed to start HTTP server", "error", err)
+			os.Exit(1)
+		}
+	}()
 
 	// Wait for quit signal.
 	quit := make(chan os.Signal, 1)

@@ -270,6 +270,47 @@ def configure_for_host_network(content, frontend_port):
     return content
 
 
+def configure_for_dev_mode(content):
+    """配置开发模式：前端使用 vite dev 服务，挂载源码支持热更新"""
+    # 修改 frontend 配置为开发模式
+    dev_frontend_config = '''  frontend_dev:
+    build:
+      context: ./web
+      dockerfile: Dockerfile.dev
+    container_name: qingtian-frontend-dev
+    restart: unless-stopped
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    ports:
+      - "${FRONTEND_PORT:-80}:5173"
+    environment:
+      - VITE_API_HOST=http://apiserver:8080
+    depends_on:
+      - apiserver
+    networks:
+      - qingtian-network
+'''
+    # 替换原 frontend 配置
+    lines = content.split('\n')
+    new_lines = []
+    in_frontend = False
+    found_frontend = False
+    for line in lines:
+        if 'frontend:' in line and not found_frontend:
+            in_frontend = True
+            found_frontend = True
+            new_lines.append(dev_frontend_config.rstrip())
+            continue
+        if in_frontend and line.strip() == '':
+            in_frontend = False
+            new_lines.append(line)
+        if not in_frontend:
+            new_lines.append(line)
+    content = '\n'.join(new_lines)
+    return content
+
+
 def check_local_docker():
     """检查本地 Docker 是否安装并运行"""
     DeployLogger.info("检查本地 Docker 环境...")
@@ -310,6 +351,10 @@ def deploy_local(args):
     if args.network == 'host':
         compose_content = configure_for_host_network(compose_content, args.port)
         nginx_content = get_nginx_conf_content(args.port, '127.0.0.1')
+
+    # --dev 参数启用前端开发模式（vite 热重载）
+    if args.dev:
+        compose_content = configure_for_dev_mode(compose_content)
 
     compose_path = os.path.join(project_path, "docker-compose.yml")
     nginx_path = os.path.join(project_path, "web/nginx.conf")
