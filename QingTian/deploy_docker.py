@@ -272,8 +272,9 @@ def configure_for_host_network(content, frontend_port):
 
 def configure_for_dev_mode(content):
     """配置开发模式：前端使用 vite dev 服务，挂载源码支持热更新"""
-    # 修改 frontend 配置为开发模式
-    dev_frontend_config = '''  frontend_dev:
+    # 修改 frontend 配置为开发模式，用实际端口替换变量
+    port = os.getenv('FRONTEND_PORT', '80')
+    dev_frontend_config = f'''  frontend_dev:
     build:
       context: ./web
       dockerfile: Dockerfile.dev
@@ -283,7 +284,7 @@ def configure_for_dev_mode(content):
       - ./web:/app
       - /app/node_modules
     ports:
-      - "${FRONTEND_PORT:-80}:5173"
+      - {port}:5173
     environment:
       - VITE_API_HOST=http://apiserver:8080
     depends_on:
@@ -345,6 +346,9 @@ def deploy_local(args):
 
     DeployLogger.step(current_step, total_steps, "重置配置文件")
     current_step += 1
+    # 将前端端口导出为环境变量，供 docker-compose 使用（替换 ${FRONTEND_PORT:-80}）
+    os.environ['FRONTEND_PORT'] = str(args.port)
+
     compose_content = get_docker_compose_base()
     nginx_content = get_nginx_conf_content(80, 'apiserver')
 
@@ -355,12 +359,6 @@ def deploy_local(args):
     # --dev 参数启用前端开发模式（vite 热重载）
     if args.dev:
         compose_content = configure_for_dev_mode(compose_content)
-
-    compose_path = os.path.join(project_path, "docker-compose.yml")
-    nginx_path = os.path.join(project_path, "web/nginx.conf")
-
-    # 将前端端口导出为环境变量，供 docker-compose 使用（替换 ${FRONTEND_PORT:-80}）
-    os.environ['FRONTEND_PORT'] = str(args.port)
 
     try:
         with open(compose_path, 'w') as f:

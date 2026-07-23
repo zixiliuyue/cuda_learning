@@ -22,6 +22,7 @@ const (
 	PermUserManage      auth.Permission = "user:manage"
 	PermNodeView       auth.Permission = "node:view"
 	PermNodeManage    auth.Permission = "node:manage"
+	PermNodeInstall   auth.Permission = "node:install"
 	PermTaskView       auth.Permission = "task:view"
 	PermTaskCreate    auth.Permission = "task:create"
 	PermTaskCancel    auth.Permission = "task:cancel"
@@ -173,6 +174,9 @@ func (s *Server) Routes(authMW Middleware) http.Handler {
 
 	// 空闲节点回收（需节点管理权限）
 	mux.Handle("GET /api/v1/nodes/idle", authed(s.handleIdleNodes))
+	// 一键安装 agent（需节点安装权限）
+	mux.Handle("POST /api/v1/nodes/install/test-ssh", authed(s.handleNodeInstallTestSSH))
+	mux.Handle("POST /api/v1/nodes/install/run", authed(s.handleNodeInstallRun))
 
 	// 成本计量看板
 	mux.Handle("GET /api/v1/metering/dashboard", authed(s.handleMeteringDashboard))
@@ -205,6 +209,111 @@ func (s *Server) Routes(authMW Middleware) http.Handler {
 		mux.HandleFunc("GET /api/v1/auth/sso/login", s.handleSSOLogin)
 		mux.HandleFunc("GET /api/v1/auth/sso/callback", s.handleSSOCallback)
 	}
+
+	// ========== Workflow 工作流（企业版功能）==========
+	// 工作流定义 CRUD
+	mux.Handle("POST /api/v1/workflows", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleCreateWorkflow(w, r)
+	}))
+	mux.Handle("GET /api/v1/workflows", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleListWorkflows(w, r)
+	}))
+	mux.Handle("GET /api/v1/workflows/{id}", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleGetWorkflow(w, r)
+	}))
+	mux.Handle("PUT /api/v1/workflows/{id}", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleUpdateWorkflow(w, r)
+	}))
+	mux.Handle("DELETE /api/v1/workflows/{id}", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleDeleteWorkflow(w, r)
+	}))
+
+	// 工作流执行
+	mux.Handle("POST /api/v1/workflows/{id}/run", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleRunWorkflow(w, r)
+	}))
+	mux.Handle("GET /api/v1/workflows/{id}/runs", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleListWorkflowRuns(w, r)
+	}))
+	mux.Handle("GET /api/v1/workflow-runs/{id}", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleGetWorkflowRun(w, r)
+	}))
+
+	// 定时调度
+	mux.Handle("POST /api/v1/schedules", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleCreateSchedule(w, r)
+	}))
+	mux.Handle("GET /api/v1/schedules", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleListSchedules(w, r)
+	}))
+	mux.Handle("GET /api/v1/schedules/{id}", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleGetSchedule(w, r)
+	}))
+	mux.Handle("PUT /api/v1/schedules/{id}", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleUpdateSchedule(w, r)
+	}))
+	mux.Handle("DELETE /api/v1/schedules/{id}", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleDeleteSchedule(w, r)
+	}))
+	mux.Handle("POST /api/v1/schedules/{id}/trigger", authed(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.requireFeature(domain.FeatureWorkflow); err != nil {
+			httpx.WriteError(w, err)
+			return
+		}
+		s.handleTriggerSchedule(w, r)
+	}))
 
 	return mux
 }

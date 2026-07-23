@@ -79,9 +79,9 @@ onMounted(loadProjects)
         <a-button type="primary" @click="openCreateModal">{{ t('project.createBtn') }}</a-button>
       </template>
       <a-table :data="projects" :loading="loading" row-key="id" :pagination="{ pageSize: 10 }">
-        <a-table-column :title="t('project.projectName')" data-index="name" />
-        <a-table-column :title="t('project.owner')" data-index="ownerUsername" />
-        <a-table-column :title="t('project.members')" data-index="memberCount">
+        <a-table-column :title="t('project.projectName')" data-index="name" :width="200" />
+        <a-table-column :title="t('project.owner')" data-index="ownerUsername" :width="150" />
+        <a-table-column :title="t('project.members')" data-index="memberCount" :width="100">
           <template #cell="{ record }">
             {{ (record.members || []).length }}
           </template>

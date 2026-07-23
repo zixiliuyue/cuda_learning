@@ -62,3 +62,4 @@ export const projectApi = {
   // 添加项目成员
   addMember: (projectId, username) => request.post(`/projects/${projectId}/members`, { username })
 }
+export { workflowApi, scheduleApi } from './workflow'

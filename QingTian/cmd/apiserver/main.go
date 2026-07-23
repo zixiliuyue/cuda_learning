@@ -135,6 +135,19 @@ func main() {
 
 	// Build routes.
 	metricsExporter := metrics.NewExporter(infra.Store.Nodes())
+
+	// 初始化工作流服务
+	workflowRepo := infra.Store.Workflows()
+	workflowRunRepo := infra.Store.WorkflowRuns()
+	taskRunRepo := infra.Store.TaskRuns()
+	scheduleRepo := infra.Store.Schedules()
+
+	workflowSvc := service.NewWorkflowService(workflowRepo)
+	workflowRunSvc := service.NewWorkflowRunService(workflowRunRepo)
+	defaultSubmitter := service.NewDefaultTaskSubmitter(taskSvc, "")
+	wfEngine := service.NewWorkflowEngine(workflowRepo, workflowRunRepo, taskRunRepo, defaultSubmitter)
+	scheduleSvc := service.NewScheduleService(scheduleRepo, wfEngine)
+
 	server := api.NewServer(userSvc, nodeSvc, taskSvc, tokens).
 		WithTemplates(templateSvc).
 		WithTerminals(terminalMgr).
@@ -143,6 +156,7 @@ func main() {
 		WithQuota(quotaSvc).
 		WithProjects(projectSvc).
 		WithEdition(domain.Edition(cfg.Edition)).
+		WithWorkflow(workflowSvc, wfEngine, workflowRunSvc, scheduleSvc).
 		WithMetricsExporter(metricsExporter)
 	mux := server.Routes(api.AuthMiddleware(tokens))
 	httpServer := &http.Server{Addr: cfg.Server.Addr, Handler: mux}

@@ -63,7 +63,7 @@ onMounted(loadData)
 
     <!-- 我的配额 -->
     <a-card :title="t('quota.title')" style="margin-top: 16px">
-      <a-space direction="vertical" :size="large" style="width: 100%">
+      <a-space direction="vertical" size="large" style="width: 100%">
         <a-row :gutter="16">
           <a-col :span="8">
             <a-statistic :title="t('quota.maxGPUHours')" :value="myQuota?.maxGPUHours ?? 0" :value-formatter="
@@ -103,10 +103,10 @@ onMounted(loadData)
     <!-- 我的用量列表 -->
     <a-card :title="t('metering.myUsage')" style="margin-top: 16px">
       <a-table :data="myUsage" :loading="loading" row-key="date" :pagination="{ pageSize: 10 }">
-        <a-table-column :title="t('metering.date')" data-index="date" width="180" />
-        <a-table-column :title="t('metering.taskCount')" data-index="taskCount" width="120" />
-        <a-table-column :title="t('metering.gpuHours')" data-index="gpuHours" width="120" />
-        <a-table-column :title="t('metering.cost')" data-index="cost" width="120" />
+        <a-table-column :title="t('metering.date')" data-index="date" :width="180" />
+        <a-table-column :title="t('metering.taskCount')" data-index="taskCount" :width="120" />
+        <a-table-column :title="t('metering.gpuHours')" data-index="gpuHours" :width="120" />
+        <a-table-column :title="t('metering.cost')" data-index="cost" :width="120" />
       </a-table>
     </a-card>
   </a-spin>

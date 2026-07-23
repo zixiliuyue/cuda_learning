@@ -43,3 +43,4 @@ venv/
 _tmp/
 *.tmp
 *.log
+.gstack/

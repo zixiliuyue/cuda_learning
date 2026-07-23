@@ -73,6 +73,26 @@ func (s *MongoStore) TaskTemplates() *MongoTaskTemplateRepo {
 	return &MongoTaskTemplateRepo{col: s.db.Collection("task_templates")}
 }
 
+// Workflows 返回工作流定义仓储的 MongoDB 实现。
+func (s *MongoStore) Workflows() WorkflowRepository {
+	return NewMongoWorkflowRepo(s.db)
+}
+
+// WorkflowRuns 返回工作流执行实例仓储的 MongoDB 实现。
+func (s *MongoStore) WorkflowRuns() WorkflowRunRepository {
+	return NewMongoWorkflowRunRepo(s.db)
+}
+
+// TaskRuns 返回任务执行实例仓储的 MongoDB 实现。
+func (s *MongoStore) TaskRuns() TaskRunRepository {
+	return NewMongoTaskRunRepo(s.db)
+}
+
+// Schedules 返回定时计划仓储的 MongoDB 实现。
+func (s *MongoStore) Schedules() ScheduleRepository {
+	return NewMongoScheduleRepo(s.db)
+}
+
 // MongoUserRepo 是 UserRepository 的 MongoDB 实现。
 type MongoUserRepo struct{ col *mongo.Collection }
 

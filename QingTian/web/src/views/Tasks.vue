@@ -366,7 +366,7 @@ onMounted(() => {
       :ok-text="t('common.upload')"
       :cancel-text="t('common.cancel')"
     >
-      <a-form layout="vertical">
+      <a-form layout="vertical" :model="{}">
         <a-form-item :label="t('dataset.selectFile')">
           <input type="file" @change="onFileChange" />
         </a-form-item>

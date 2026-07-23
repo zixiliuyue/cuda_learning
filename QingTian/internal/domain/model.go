@@ -512,6 +512,17 @@ type TerminalMessage struct {
 
 // ==== 工作流编排相关领域模型 ====
 
+// ExecutorType 执行器类型
+// 定义工作流节点支持的不同执行方式
+type ExecutorType string
+
+const (
+	ExecutorTypeContainer ExecutorType = "container" // 容器镜像执行（兼容原有）
+	ExecutorTypeShell      ExecutorType = "shell"      // Shell 脚本直接执行
+	ExecutorTypePython     ExecutorType = "python"     // Python 脚本执行
+	ExecutorTypeAPI        ExecutorType = "api"        // 自定义 API 调用
+)
+
 // WorkflowStatus 工作流定义状态
 type WorkflowStatus string
 
@@ -520,6 +531,41 @@ const (
 	WorkflowStatusActive    WorkflowStatus = "active"    // 活跃，可以执行
 	WorkflowStatusArchived WorkflowStatus = "archived" // 已归档，不再执行
 )
+
+// ContainerExecutorConfig 容器执行配置
+// 兼容原有的容器执行模式，使用用户自定义镜像
+type ContainerExecutorConfig struct {
+	Image   string            `json:"image" bson:"image"`             // 容器镜像
+	Command []string          `json:"command" bson:"command"`         // 启动命令
+	Args    []string          `json:"args" bson:"args"`               // 命令参数
+	Env     map[string]string `json:"env" bson:"env"`                 // 环境变量
+}
+
+// ShellExecutorConfig Shell 脚本执行配置
+// 使用预构建的 shell-runner 镜像执行用户脚本
+type ShellExecutorConfig struct {
+	Script string            `json:"script" bson:"script"`           // Shell 脚本内容
+	Env    map[string]string `json:"env" bson:"env"`                 // 环境变量
+}
+
+// PythonExecutorConfig Python 脚本执行配置
+// 使用预构建的 python-runner 镜像执行用户脚本
+type PythonExecutorConfig struct {
+	Script       string            `json:"script" bson:"script"`           // Python 脚本内容
+	Requirements []string          `json:"requirements,omitempty" bson:"requirements,omitempty"` // pip 依赖列表
+	Env          map[string]string `json:"env" bson:"env"`                 // 环境变量
+}
+
+// APIExecutorConfig 自定义 API 调用配置
+// 使用预构建的 api-runner 镜像发起 HTTP 请求
+type APIExecutorConfig struct {
+	URL         string            `json:"url" bson:"url"`                   // API 地址
+	Method      string            `json:"method" bson:"method"`             // HTTP 方法 (GET/POST/PUT/DELETE)
+	Headers     map[string]string `json:"headers" bson:"headers"`           // 请求头
+	Body        string            `json:"body" bson:"body"`                 // 请求体模板（支持 ${param} 占位符替换）
+	Timeout     int               `json:"timeout" bson:"timeout"`           // 超时秒数
+	SuccessCodes []int             `json:"successCodes" bson:"success_codes"` // 视为成功的 HTTP 状态码
+}
 
 // Workflow 工作流定义
 // 由多个任务节点组成 DAG，定义任务执行顺序和依赖关系
@@ -547,16 +593,29 @@ type Workflow struct {
 }
 
 // WorkflowTask 工作流中的单个任务节点
+// 支持多种执行类型：容器、Shell、Python、API
 type WorkflowTask struct {
 	ID          string            `json:"id" bson:"id"`
 	Name        string            `json:"name" bson:"name"`
 	Description string            `json:"description" bson:"description"`
 
-	// 任务配置
-	Image       string            `json:"image" bson:"image"`
-	Command     []string          `json:"command" bson:"command"`
-	Args        []string          `json:"args" bson:"args"`
-	Env         map[string]string `json:"env" bson:"env"`
+	// === 执行器类型与配置 ===
+	ExecutorType ExecutorType     `json:"executorType" bson:"executor_type"`
+	// 不同执行器类型使用对应的配置结构体，其他为 nil
+	ContainerConfig *ContainerExecutorConfig `json:"containerConfig,omitempty" bson:"container_config,omitempty"`
+	ShellConfig     *ShellExecutorConfig     `json:"shellConfig,omitempty" bson:"shell_config,omitempty"`
+	PythonConfig    *PythonExecutorConfig    `json:"pythonConfig,omitempty" bson:"python_config,omitempty"`
+	APIConfig       *APIExecutorConfig       `json:"apiConfig,omitempty" bson:"api_config,omitempty"`
+
+	// 兼容旧数据：保留原有字段，新代码优先使用新配置
+	// Deprecated: 使用 ContainerConfig 替代
+	Image       string            `json:"image,omitempty" bson:"image"`
+	// Deprecated: 使用 ContainerConfig 替代
+	Command     []string          `json:"command,omitempty" bson:"command"`
+	// Deprecated: 使用 ContainerConfig 替代
+	Args        []string          `json:"args,omitempty" bson:"args"`
+	// Deprecated: 使用 ContainerConfig 替代
+	Env         map[string]string `json:"env,omitempty" bson:"env"`
 
 	// 资源需求
 	Resources   ResourceSpec       `json:"resources" bson:"resources"`

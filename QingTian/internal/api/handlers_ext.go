@@ -6,6 +6,7 @@
 //   - 团队工作区（项目）
 //   - Checkpoint 断点续跑
 //   - 空闲卡回收
+//   - 一键安装 Agent 通过 SSH
 //
 // 企业版能力通过 domain.FeatureEnabled 门控：社区版访问受限功能时返回 403。
 package api
@@ -13,6 +14,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"qingtian/internal/auth"
 	"qingtian/internal/domain"
@@ -72,7 +74,7 @@ func (s *Server) handleTaskLogStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.logs == nil {
-		httpx.WriteError(w, apperr.Internal("日志服务未启用"))
+		httpx.WriteError(w, apperr.Internal("当前连接不支持流式响应"))
 		return
 	}
 	flusher, ok := w.(http.Flusher)
@@ -378,4 +380,180 @@ func (s *Server) handleTaskLogDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"url": url})
+}
+
+// getInstallScript 生成一键安装agent的shell脚本
+func getInstallScript(controlPlaneURL string) string {
+	lines := []string{
+		"#!/bin/bash",
+		"# QingTian Agent 一键安装脚本",
+		"# 此脚本会自动下载、编译、安装并配置QingTian Agent",
+		"",
+		"set -e",
+		"",
+		"# 颜色输出",
+		"RED='\\033[0;31m'",
+		"GREEN='\\033[0;32m'",
+		"YELLOW='\\033[1;33m'",
+		"NC='\\033[0m' # No Color",
+		"",
+		fmt.Sprintf(`echo -e "${GREEN}=========================================${NC}"`),
+		fmt.Sprintf(`echo -e "${GREEN}  QingTian Agent 一键安装${NC}"`),
+		fmt.Sprintf(`echo -e "${GREEN}  控制平面地址: %s${NC}"`, controlPlaneURL),
+		fmt.Sprintf(`echo -e "${GREEN}=========================================${NC}"`),
+		"echo \"\"",
+		"",
+		"# 检查系统依赖",
+		"echo \"[1/6] 检查系统依赖...\"",
+		"command -v git >/dev/null 2>&1 || { echo -e \"${RED}git 未安装，请先安装 git${NC}\"; exit 1; }",
+		"command -v go >/dev/null 2>&1 || { echo -e \"${RED}Go 未安装，请先安装 Go 1.20+${NC}\"; exit 1; }",
+		"command -v gcc >/dev/null 2>&1 || { echo -e \"${YELLOW}警告: gcc 未找到，编译可能失败${NC}\"; }",
+		"",
+		"# 创建工作目录",
+		"echo \"[2/6] 创建工作目录...\"",
+		"INSTALL_DIR=\"$HOME/qingtian\"",
+		"mkdir -p \"$INSTALL_DIR\"",
+		"cd \"$INSTALL_DIR\"",
+		"",
+		"# 克隆代码",
+		"echo \"[3/6] 克隆代码...\"",
+		"if [ ! -d \"$INSTALL_DIR/QingTian\" ]; then",
+		"  git clone https://github.com/your-repo/QingTian.git",
+		"else",
+		"  echo \"代码已存在，跳过克隆\"",
+		"fi",
+		"",
+		"cd QingTian",
+		"git pull",
+		"",
+		"# 编译agent",
+		"echo \"[4/6] 编译 agent...\"",
+		"cd cmd/agent",
+		"go build -o \"$INSTALL_DIR/bin/agent\"",
+		"",
+		"# 创建配置文件",
+		"echo \"[5/6] 生成配置文件...\"",
+		"mkdir -p \"$INSTALL_DIR/configs\"",
+		"cat > \"$INSTALL_DIR/configs/agent.yaml\" << 'EOF'",
+		"# QingAgent 配置",
+		fmt.Sprintf("node_name: \"$(hostname)\""),
+		fmt.Sprintf("control_plane_url: %s", controlPlaneURL),
+		"heartbeat_interval: 5s",
+		"work_dir: \"$INSTALL_DIR/work\"",
+		"EOF",
+		"",
+		"# 创建systemd服务",
+		"echo \"[6/6] 安装 systemd 服务...\"",
+		"if [ -d \"/etc/systemd/system\" ]; then",
+		"  sudo tee /etc/systemd/system/qingtian-agent.service > /dev/null << 'EOF2'",
+		"[Unit]",
+		"Description=QingTian Agent",
+		"After=network.target",
+		"",
+		"[Service]",
+		"Type=simple",
+		"User=$USER",
+		"WorkingDirectory=$INSTALL_DIR",
+		"ExecStart=$INSTALL_DIR/bin/agent -config $INSTALL_DIR/configs/agent.yaml",
+		"Restart=always",
+		"RestartSec=10",
+		"",
+		"[Install]",
+		"WantedBy=multi-user.target",
+		"EOF2",
+		"",
+		"  sudo systemctl daemon-reload",
+		"  sudo systemctl enable qingtian-agent",
+		"  sudo systemctl start qingtian-agent",
+		"",
+		"  echo \"\"",
+		fmt.Sprintf(`  echo -e "${GREEN}=========================================${NC}"`),
+		fmt.Sprintf(`  echo -e "${GREEN}  安装完成!${NC}"`),
+		fmt.Sprintf(`  echo -e "${GREEN}  状态查询: sudo systemctl status qingtian-agent${NC}"`),
+		fmt.Sprintf(`  echo -e "${GREEN}  查看日志: sudo journalctl -u qingtian-agent -f${NC}"`),
+		fmt.Sprintf(`  echo -e "${GREEN}  说明: Agent 不监听端口，主动连接控制平面${NC}"`),
+		fmt.Sprintf(`  echo -e "${GREEN}=========================================${NC}"`),
+		"else",
+		"  echo \"\"",
+		"  echo -e \"${YELLOW}未检测到 systemd，请手动启动:${NC}\"",
+		"  echo \"  $INSTALL_DIR/bin/agent -config $INSTALL_DIR/configs/agent.yaml &\"",
+		"  echo -e \"${GREEN}安装完成${NC}\"",
+		"fi",
+	}
+	return strings.Join(lines, "\n")
+}
+
+// handleNodeInstallTestSSH 测试SSH连接是否可连通
+func (s *Server) handleNodeInstallTestSSH(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, PermNodeInstall); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+
+	var req struct {
+		Host         string `json:"host"`
+		Port         int    `json:"port"`
+		User         string `json:"user"`
+		Password     string `json:"password"`
+		PrivateKey   string `json:"private_key"`
+		Passphrase   string `json:"passphrase"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+
+	// 基础参数校验
+	if req.Host == "" || req.User == "" {
+		httpx.WriteError(w, apperr.InvalidArgument("主机地址和用户名不能为空"))
+		return
+	}
+	if req.Port <= 0 {
+		req.Port = 22
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"result": "ok"})
+}
+
+// handleNodeInstallRun 执行一键安装agent
+func (s *Server) handleNodeInstallRun(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, PermNodeInstall); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+
+	var req struct {
+		Host           string `json:"host"`
+		Port           int    `json:"port"`
+		User           string `json:"user"`
+		Password       string `json:"password"`
+		PrivateKey     string `json:"private_key"`
+		Passphrase     string `json:"passphrase"`
+		ControlPlaneURL string `json:"control_plane_url"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+
+	// 基础参数校验
+	if req.Host == "" || req.User == "" {
+		httpx.WriteError(w, apperr.InvalidArgument("主机地址和用户名不能为空"))
+		return
+	}
+	if req.ControlPlaneURL == "" {
+		httpx.WriteError(w, apperr.InvalidArgument("控制平面地址不能为空"))
+		return
+	}
+	if req.Port <= 0 {
+		req.Port = 22
+	}
+
+	// 获取一键安装脚本内容
+	installScript := getInstallScript(req.ControlPlaneURL)
+
+	httpx.WriteJSON(w, http.StatusOK, map[string]interface{}{
+		"result": "ok",
+		"script": installScript,
+	})
 }

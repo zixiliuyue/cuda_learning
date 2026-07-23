@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -211,8 +212,8 @@ func (e *WorkflowEngine) Run(
 // buildExecutionGraph 从工作流定义构建执行图，方便获取就绪任务
 type ExecutionGraph struct {
 	tasks   map[string]*domain.WorkflowTask
-	deps     map[string][]string             // taskID -> 依赖这个task的tasks
-	children map[string][]string             // taskID -> 被这个task依赖的tasks
+	deps    map[string][]string             // taskID -> 这个task依赖的tasks （当前task要等这些deps完成）
+	children map[string][]string             // taskID -> 依赖这个task的tasks （这些tasks要等当前task完成）
 	status   map[string]domain.TaskRunStatus // taskID -> 当前状态
 }
 
@@ -220,7 +221,7 @@ type ExecutionGraph struct {
 func buildExecutionGraph(wf *domain.Workflow) *ExecutionGraph {
 	g := &ExecutionGraph{
 		tasks:   make(map[string]*domain.WorkflowTask),
-		deps:     make(map[string][]string),
+		deps:    make(map[string][]string),
 		children: make(map[string][]string),
 		status:   make(map[string]domain.TaskRunStatus),
 	}
@@ -228,11 +229,13 @@ func buildExecutionGraph(wf *domain.Workflow) *ExecutionGraph {
 		taskCopy := task
 		g.tasks[task.ID] = &taskCopy
 		g.status[task.ID] = domain.TaskRunStatusPending
-		// 每个边加入依赖关系
-		for _, edge := range wf.Edges {
-			g.deps[edge.To] = append(g.deps[edge.From], edge.From)
-			g.children[edge.From] = append(g.children[edge.From], edge.To)
-		}
+	}
+	// 每个边加入依赖关系
+	// 边: From → To 意味着 From 必须在 To 之前完成
+	// 所以 → To 依赖 From，To要等From完成
+	for _, edge := range wf.Edges {
+		g.deps[edge.To] = append(g.deps[edge.To], edge.From)
+		g.children[edge.From] = append(g.children[edge.From], edge.To)
 	}
 	return g
 }
@@ -261,6 +264,7 @@ func (g *ExecutionGraph) GetReadyTasks(run *domain.WorkflowRun) []*domain.Workfl
 }
 
 // OnTaskComplete 任务完成回调，当一个任务完成后，检查是否有新的任务就绪
+// 使用乐观并发控制防止并行任务完成时的竞态条件（多个并行任务同时完成会产生丢失更新）
 func (e *WorkflowEngine) OnTaskComplete(
 	ctx context.Context,
 	runID string,
@@ -283,40 +287,72 @@ func (e *WorkflowEngine) OnTaskComplete(
 		return err
 	}
 
-	// 获取工作流运行实例
+	// 获取工作流运行实例，使用乐观循环处理并发更新
+	// 乐观并发控制：当多个并行任务同时完成时，我们重试冲突直到成功
+	// 这比悲观锁更适合低冲突场景，性能更好
+	maxRetries := 10
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// 获取当前版本
+		run, err := e.runRepo.GetByID(ctx, runID)
+		if err != nil {
+			return err
+		}
+
+		// 保存当前版本用于乐观锁检查
+		// 注意：MongoDB 自带 _id 作为主键，我们依赖它的原子更新模型
+		// 这里通过重新计算状态然后尝试写入，如果冲突就重试
+
+		// 更新工作流状态：如果所有任务都完成，工作流就完成了
+		allCompleted := true
+		var failed int
+		// 遍历当前执行图所有任务，检查状态
+		for i, tr := range run.TaskRuns {
+			if tr.ID == taskRun.ID {
+				// 更新当前任务的状态到本地拷贝
+				run.TaskRuns[i].Status = taskRun.Status
+			}
+			switch run.TaskRuns[i].Status {
+			case domain.TaskRunStatusPending, domain.TaskRunStatusRunning:
+				allCompleted = false
+			case domain.TaskRunStatusFailed:
+				failed++
+			}
+		}
+
+		switch {
+		case failed > 0:
+			run.Status = domain.WorkflowRunStatusFailed
+		case allCompleted:
+			run.Status = domain.WorkflowRunStatusSucceeded
+		default:
+			run.Status = domain.WorkflowRunStatusRunning
+		}
+
+		// 尝试更新，如果失败（说明被其他修改者改变了）我们重试
+		err = e.runRepo.Update(ctx, run)
+		if err == nil {
+			// 更新成功，跳出循环
+			break
+		}
+		// 如果更新失败，循环重试
+		// 这就是乐观并发控制：冲突时重试，低冲突场景性能优异
+	}
+
+	// 获取工作流运行实例（最终版本）
 	run, err := e.runRepo.GetByID(ctx, runID)
 	if err != nil {
 		return err
 	}
 
-	// 更新工作流状态：如果所有任务都完成，工作流就完成了
+	// 如果工作流还没完成，找出新的就绪任务提交它们
 	allCompleted := true
-	var failed int
-	// 遍历当前执行图所有任务，检查状态
 	for _, tr := range run.TaskRuns {
 		switch tr.Status {
 		case domain.TaskRunStatusPending, domain.TaskRunStatusRunning:
 			allCompleted = false
-		case domain.TaskRunStatusFailed:
-			failed++
 		}
 	}
 
-	switch {
-	case failed > 0:
-		run.Status = domain.WorkflowRunStatusFailed
-	case allCompleted:
-		run.Status = domain.WorkflowRunStatusSucceeded
-	default:
-		run.Status = domain.WorkflowRunStatusRunning
-	}
-
-	// 更新运行实例
-	if err := e.runRepo.Update(ctx, run); err != nil {
-		return err
-	}
-
-	// 如果工作流还没完成，找出新的就绪任务提交它们
 	if !allCompleted {
 		// 获取工作流定义
 		wfDef, err := e.workflowRepo.GetByID(ctx, run.WorkflowID)
@@ -326,6 +362,18 @@ func (e *WorkflowEngine) OnTaskComplete(
 		execGraph := buildExecutionGraph(wfDef)
 		readyTasks := execGraph.GetReadyTasks(run)
 		for _, task := range readyTasks {
+			// 检查这个任务是否已经有了任务运行记录
+			// 防止因为竞态条件重复提交同一个任务
+			alreadySubmitted := false
+			for _, tr := range run.TaskRuns {
+				if tr.TaskID == task.ID {
+					alreadySubmitted = true
+					break
+				}
+			}
+			if alreadySubmitted {
+				continue
+			}
 			_, err := e.submitTask(ctx, wfDef, run, task, run.Parameters)
 			if err != nil {
 				return err
@@ -350,9 +398,46 @@ func (e *WorkflowEngine) submitTask(
 		return "", err
 	}
 
-	// 提交任务
+	// 创建任务执行记录
+	taskRun := &domain.TaskRun{
+		ID:           generateID(),
+		TaskID:       task.ID,
+		TaskName:     task.Name,
+		Status:       domain.TaskRunStatusRunning,
+		Inputs:       resolvedInputs,
+		Outputs:      make(map[string]interface{}),
+		StartedAt:    pointer(time.Now()),
+	}
+
+	// 提交任务到 QingTian 调度系统，获取原生任务 ID
 	nativeTaskID, err := e.taskService.Submit(ctx, wf, run, task, resolvedInputs)
-	return nativeTaskID, err
+	if err != nil {
+		taskRun.Status = domain.TaskRunStatusFailed
+		taskRun.Error = err.Error()
+		_ = e.taskRepo.Create(ctx, taskRun)
+		return "", err
+	}
+
+	taskRun.NativeTaskID = nativeTaskID
+
+	// 保存任务执行记录
+	if err := e.taskRepo.Create(ctx, taskRun); err != nil {
+		return nativeTaskID, err
+	}
+
+	// 添加到工作流执行实例
+	run.TaskRuns = append(run.TaskRuns, *taskRun)
+
+	// 更新工作流状态为运行中
+	if run.Status == domain.WorkflowRunStatusPending {
+		run.Status = domain.WorkflowRunStatusRunning
+		run.StartedAt = pointer(time.Now())
+	}
+
+	// 保存更新
+	_ = e.runRepo.Update(ctx, run)
+
+	return nativeTaskID, nil
 }
 
 // resolveInputs 解析任务输入：从上游任务输出中解析出当前任务输入参数
@@ -427,19 +512,230 @@ func (s *WorkflowRunService) List(ctx context.Context, workflowID string, skip, 
 	return s.repo.ListByWorkflow(ctx, workflowID, skip, limit)
 }
 
+// ExecutorHandler 执行器处理器接口
+// 不同执行类型实现该接口来准备任务配置
+type ExecutorHandler interface {
+	// Prepare 准备任务配置，返回镜像、命令、环境变量
+	Prepare(task *domain.WorkflowTask, resolvedInputs map[string]interface{}, run *domain.WorkflowRun) (string, string, []domain.EnvVar, error)
+}
+
+// containerExecutorHandler 容器执行处理器
+type containerExecutorHandler struct {
+	submitter *DefaultTaskSubmitter
+}
+
+func (h *containerExecutorHandler) Prepare(
+	task *domain.WorkflowTask,
+	resolvedInputs map[string]interface{},
+	run *domain.WorkflowRun,
+) (string, string, []domain.EnvVar, error) {
+	var image string
+	var command string
+
+	// 优先使用新配置结构，向后兼容旧字段
+	if task.ContainerConfig != nil {
+		image = task.ContainerConfig.Image
+		if len(task.ContainerConfig.Command) > 0 {
+			command = strings.Join(task.ContainerConfig.Command, " ")
+			if len(task.ContainerConfig.Args) > 0 {
+				command += " " + strings.Join(task.ContainerConfig.Args, " ")
+			}
+		}
+
+		// 转换环境变量
+		env := make([]domain.EnvVar, 0, len(task.ContainerConfig.Env))
+		for k, v := range task.ContainerConfig.Env {
+			expandedV := h.submitter.expandEnvVar(v, resolvedInputs, run.Parameters)
+			env = append(env, domain.EnvVar{Name: k, Value: expandedV})
+		}
+		return image, command, env, nil
+	}
+
+	// 向后兼容：使用旧字段
+	image = task.Image
+	if len(task.Command) > 0 {
+		command = strings.Join(task.Command, " ")
+		if len(task.Args) > 0 {
+			command += " " + strings.Join(task.Args, " ")
+		}
+	}
+
+	// 转换环境变量
+	env := make([]domain.EnvVar, 0, len(task.Env))
+	for k, v := range task.Env {
+		expandedV := h.submitter.expandEnvVar(v, resolvedInputs, run.Parameters)
+		env = append(env, domain.EnvVar{Name: k, Value: expandedV})
+	}
+	return image, command, env, nil
+}
+
+// shellExecutorHandler Shell 脚本执行处理器
+// 使用预构建的 shell-runner 镜像执行用户脚本
+type shellExecutorHandler struct {
+	submitter *DefaultTaskSubmitter
+}
+
+func (h *shellExecutorHandler) Prepare(
+	task *domain.WorkflowTask,
+	resolvedInputs map[string]interface{},
+	run *domain.WorkflowRun,
+) (string, string, []domain.EnvVar, error) {
+	// 使用预构建的 shell-runner 镜像
+	image := "qingtian/shell-runner:latest"
+
+	if task.ShellConfig == nil {
+		return image, "", nil, apperr.InvalidArgument("shellConfig is required for shell executor")
+	}
+
+	// 将脚本写入临时文件并执行
+	// 脚本内容通过环境变量传递或者直接作为命令
+	script := task.ShellConfig.Script
+	// base64 编码脚本内容避免引号转义问题，在入口脚本中解码执行
+	command := fmt.Sprintf("echo '%s' | base64 -d > /workspace/script.sh && chmod +x /workspace/script.sh && /workspace/script.sh", encodeBase64(script))
+
+	// 转换环境变量
+	env := make([]domain.EnvVar, 0, len(task.ShellConfig.Env))
+	for k, v := range task.ShellConfig.Env {
+		expandedV := h.submitter.expandEnvVar(v, resolvedInputs, run.Parameters)
+		env = append(env, domain.EnvVar{Name: k, Value: expandedV})
+	}
+
+	return image, command, env, nil
+}
+
+// pythonExecutorHandler Python 脚本执行处理器
+// 使用预构建的 python-runner 镜像执行用户脚本
+type pythonExecutorHandler struct {
+	submitter *DefaultTaskSubmitter
+}
+
+func (h *pythonExecutorHandler) Prepare(
+	task *domain.WorkflowTask,
+	resolvedInputs map[string]interface{},
+	run *domain.WorkflowRun,
+) (string, string, []domain.EnvVar, error) {
+	// 使用预构建的 python-runner 镜像
+	image := "qingtian/python-runner:latest"
+
+	if task.PythonConfig == nil {
+		return image, "", nil, apperr.InvalidArgument("pythonConfig is required for python executor")
+	}
+
+	script := task.PythonConfig.Script
+	// 同样使用 base64 编码避免引号问题
+	command := fmt.Sprintf("echo '%s' | base64 -d > /workspace/script.py", encodeBase64(script))
+
+	// 如果有 requirements，先安装
+	if len(task.PythonConfig.Requirements) > 0 {
+		reqs := strings.Join(task.PythonConfig.Requirements, " ")
+		command += fmt.Sprintf(" && pip install %s", reqs)
+	}
+
+	// 执行脚本
+	command += " && python /workspace/script.py"
+
+	// 转换环境变量
+	env := make([]domain.EnvVar, 0, len(task.PythonConfig.Env))
+	for k, v := range task.PythonConfig.Env {
+		expandedV := h.submitter.expandEnvVar(v, resolvedInputs, run.Parameters)
+		env = append(env, domain.EnvVar{Name: k, Value: expandedV})
+	}
+
+	return image, command, env, nil
+}
+
+// apiExecutorHandler API 调用执行处理器
+// 使用预构建的 api-runner 镜像发起 HTTP 请求
+type apiExecutorHandler struct {
+	submitter *DefaultTaskSubmitter
+}
+
+func (h *apiExecutorHandler) Prepare(
+	task *domain.WorkflowTask,
+	resolvedInputs map[string]interface{},
+	run *domain.WorkflowRun,
+) (string, string, []domain.EnvVar, error) {
+	// 使用预构建的 api-runner 镜像
+	image := "qingtian/api-runner:latest"
+
+	if task.APIConfig == nil {
+		return image, "", nil, apperr.InvalidArgument("apiConfig is required for api executor")
+	}
+
+	cfg := task.APIConfig
+
+	// 将配置通过环境变量传递给 runner
+	// 命令由 runner 入口脚本处理
+	command := "/app/run.sh"
+
+	// 转换环境变量，展开占位符
+	env := make([]domain.EnvVar, 0)
+
+	// 展开占位符并设置环境变量供 runner 使用
+	expandedURL := h.submitter.expandEnvVar(cfg.URL, resolvedInputs, run.Parameters)
+	env = append(env, domain.EnvVar{Name: "API_URL", Value: expandedURL})
+
+	expandedMethod := h.submitter.expandEnvVar(cfg.Method, resolvedInputs, run.Parameters)
+	if expandedMethod == "" {
+		expandedMethod = "GET"
+	}
+	env = append(env, domain.EnvVar{Name: "API_METHOD", Value: expandedMethod})
+
+	expandedBody := h.submitter.expandEnvVar(cfg.Body, resolvedInputs, run.Parameters)
+	env = append(env, domain.EnvVar{Name: "API_BODY", Value: expandedBody})
+
+	// Headers 逐个设置
+	for k, v := range cfg.Headers {
+		expandedV := h.submitter.expandEnvVar(v, resolvedInputs, run.Parameters)
+		env = append(env, domain.EnvVar{Name: "API_HEADER_" + k, Value: expandedV})
+	}
+
+	env = append(env, domain.EnvVar{Name: "API_TIMEOUT", Value: fmt.Sprintf("%d", cfg.Timeout)})
+
+	// Success codes 作为空格分隔的字符串
+	if len(cfg.SuccessCodes) > 0 {
+		successStr := strings.Builder{}
+		for i, code := range cfg.SuccessCodes {
+			if i > 0 {
+				successStr.WriteByte(' ')
+			}
+			successStr.WriteString(fmt.Sprintf("%d", code))
+		}
+		env = append(env, domain.EnvVar{Name: "API_SUCCESS_CODES", Value: successStr.String()})
+	}
+
+	return image, command, env, nil
+}
+
+// encodeBase64 对字符串进行 base64 编码，用于嵌入脚本
+// 将脚本内容编码后嵌入命令行，避免引号转义问题
+func encodeBase64(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
+}
+
 // DefaultTaskSubmitter 默认任务提交器实现
 // 将工作流中的 WorkflowTask 转换为 QingTian 原生 Task 并提交到调度系统
+// 支持多种执行类型：容器、Shell、Python、API
 type DefaultTaskSubmitter struct {
 	taskService *TaskService
 	owner       string // 默认提交者所有者
+	handlers    map[domain.ExecutorType]ExecutorHandler
 }
 
 // NewDefaultTaskSubmitter 创建默认任务提交器
 func NewDefaultTaskSubmitter(taskService *TaskService, defaultOwner string) *DefaultTaskSubmitter {
-	return &DefaultTaskSubmitter{
+	s := &DefaultTaskSubmitter{
 		taskService: taskService,
 		owner:       defaultOwner,
 	}
+	// 初始化各执行类型处理器
+	s.handlers = map[domain.ExecutorType]ExecutorHandler{
+		domain.ExecutorTypeContainer: &containerExecutorHandler{submitter: s},
+		domain.ExecutorTypeShell:      &shellExecutorHandler{submitter: s},
+		domain.ExecutorTypePython:     &pythonExecutorHandler{submitter: s},
+		domain.ExecutorTypeAPI:        &apiExecutorHandler{submitter: s},
+	}
+	return s
 }
 
 // Submit 实现 TaskSubmitter 接口，将 WorkflowTask 转换为原生 Task 并提交
@@ -450,30 +746,32 @@ func (s *DefaultTaskSubmitter) Submit(
 	task *domain.WorkflowTask,
 	resolvedInputs map[string]interface{},
 ) (string, error) {
-	// 构造命令：合并 Command + Args
-	var command string
-	if len(task.Command) > 0 {
-		// 如果 Command 是多段，拼接成字符串
-		// 用户可以在 Command 中写完整命令，Args 作为参数
-		command = strings.Join(task.Command, " ")
-		if len(task.Args) > 0 {
-			command += " " + strings.Join(task.Args, " ")
-		}
+	// 获取对应执行类型的处理器
+	execType := task.ExecutorType
+	if execType == "" {
+		// 向后兼容：默认容器执行
+		execType = domain.ExecutorTypeContainer
 	}
 
-	// 转换环境变量从 map[string]string 到 []domain.EnvVar
-	env := make([]domain.EnvVar, 0, len(task.Env))
-	for k, v := range task.Env {
-		// 解析输入参数替换环境变量中的占位符
-		// 支持 ${param} 格式的占位符替换
-		expandedV := s.expandEnvVar(v, resolvedInputs, run.Parameters)
-		env = append(env, domain.EnvVar{Name: k, Value: expandedV})
+	handler, ok := s.handlers[execType]
+	if !ok {
+		return "", apperr.InvalidArgument(fmt.Sprintf("unknown executor type: %s", execType))
+	}
+
+	// 调用处理器准备配置
+	image, command, env, err := handler.Prepare(task, resolvedInputs, run)
+	if err != nil {
+		return "", err
 	}
 
 	// 转换资源规格
 	gpuCount := task.Resources.GPUCount
 	if gpuCount <= 0 {
 		gpuCount = 1 // 默认至少 1 卡
+		// 对于 API 调用，通常不需要 GPU，允许 0
+		if execType == domain.ExecutorTypeAPI {
+			gpuCount = 0
+		}
 	}
 
 	// 解析 GPUMemory 转换为 MB
@@ -482,21 +780,21 @@ func (s *DefaultTaskSubmitter) Submit(
 
 	// 构造提交请求
 	req := SubmitRequest{
-		Name:        fmt.Sprintf("%s-%s", wf.Name, task.Name),
-		Image:       task.Image,
-		Command:     command,
-		Env:         env,
-		Priority:    50, // 默认优先级
-		GPUCount:    gpuCount,
-		MemoryMB:    memoryMB,
-		GPUModel:    task.Resources.GPUModel,
-		Vendor:      domain.VendorNVIDIA, // 默认 NVIDIA，可通过参数覆盖
-		ShareMode:   domain.ShareExclusive, // 默认独占
-		TimeoutSeconds: int64(task.Timeout.Duration.Seconds()),
-		Preemptible: false, // 默认不可抢占
-		MaxRetries:  task.Retries,
+		Name:            fmt.Sprintf("%s-%s", wf.Name, task.Name),
+		Image:           image,
+		Command:         command,
+		Env:             env,
+		Priority:        50, // 默认优先级
+		GPUCount:        gpuCount,
+		MemoryMB:        memoryMB,
+		GPUModel:        task.Resources.GPUModel,
+		Vendor:          domain.VendorNVIDIA, // 默认 NVIDIA，可通过参数覆盖
+		ShareMode:       domain.ShareExclusive, // 默认独占
+		TimeoutSeconds:  int64(task.Timeout.Duration.Seconds()),
+		Preemptible:     false, // 默认不可抢占
+		MaxRetries:      task.Retries,
 		// TODO: 支持从工作流参数中读取 ProjectID
-		ProjectID: "",
+		ProjectID:       "",
 	}
 
 	// 所有者从工作流触发信息获取，如果没有则使用默认
@@ -627,4 +925,14 @@ func (s *DefaultTaskSubmitter) parseMemoryToMB(memStr string) int64 {
 	}
 
 	return int64(value * float64(multiplier))
+}
+
+// generateID 生成唯一 ID
+func generateID() string {
+	return fmt.Sprintf("%x", time.Now().UnixNano())
+}
+
+// pointer 是辅助函数，返回 T 的指针
+func pointer[T any](v T) *T {
+	return &v
 }

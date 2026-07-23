@@ -7,10 +7,36 @@ package repository
 import (
 	"context"
 	"sync"
+	"time"
 
 	"qingtian/internal/domain"
 	"qingtian/pkg/apperr"
 )
+
+// InMemoryStore 聚合基于内存的各仓储实现，用于测试和演示。
+// 对应 MongoStore 的内存实现版本。
+type InMemoryStore struct {
+	users           *MemoryUserRepo
+	nodes           *MemoryNodeRepo
+	tasks           *MemoryTaskRepo
+	usages          *MemoryUsageRepo
+	quotas          *MemoryQuotaRepo
+	projects        *MemoryProjectRepo
+	taskTemplates  *MemoryTaskTemplateRepo
+}
+
+// NewInMemoryStore 创建一个空的内存存储。
+func NewInMemoryStore() *InMemoryStore {
+	return &InMemoryStore{
+		users:           NewMemoryUserRepo(),
+		nodes:           NewMemoryNodeRepo(),
+		tasks:           NewMemoryTaskRepo(),
+		usages:          NewMemoryUsageRepo(),
+		quotas:          NewMemoryQuotaRepo(),
+		projects:        NewMemoryProjectRepo(),
+		taskTemplates:  NewMemoryTaskTemplateRepo(),
+	}
+}
 
 // MemoryUserRepo 是 UserRepository 的内存实现。
 type MemoryUserRepo struct {
@@ -533,6 +559,321 @@ func (r *MemoryTaskTemplateRepo) ListByProject(_ context.Context, projectID stri
 		if t.ProjectID == projectID {
 			cp := *t
 			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+
+// Workflows 返回工作流定义仓储的内存实现。
+func (s *InMemoryStore) Workflows() WorkflowRepository {
+	return NewMemoryWorkflowRepo()
+}
+
+// WorkflowRuns 返回工作流执行实例仓储的内存实现。
+func (s *InMemoryStore) WorkflowRuns() WorkflowRunRepository {
+	return NewMemoryWorkflowRunRepo()
+}
+
+// TaskRuns 返回任务执行实例仓储的内存实现。
+func (s *InMemoryStore) TaskRuns() TaskRunRepository {
+	return NewMemoryTaskRunRepo()
+}
+
+// Schedules 返回定时计划仓储的内存实现。
+func (s *InMemoryStore) Schedules() ScheduleRepository {
+	return NewMemoryScheduleRepo()
+}
+
+// MemoryWorkflowRepo 是 WorkflowRepository 的内存实现。
+type MemoryWorkflowRepo struct {
+	mu    sync.RWMutex
+	byID  map[string]*domain.Workflow
+}
+
+// NewMemoryWorkflowRepo 创建内存工作流定义仓储。
+func NewMemoryWorkflowRepo() *MemoryWorkflowRepo {
+	return &MemoryWorkflowRepo{
+		byID: make(map[string]*domain.Workflow),
+	}
+}
+
+// GetByID 实现 WorkflowRepository.GetByID。
+func (r *MemoryWorkflowRepo) GetByID(_ context.Context, id string) (*domain.Workflow, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	wf, ok := r.byID[id]
+	if !ok {
+		return nil, apperr.NotFound("workflow not found: " + id)
+	}
+	cp := *wf
+	return &cp, nil
+}
+
+// List 实现 WorkflowRepository.List。
+func (r *MemoryWorkflowRepo) List(_ context.Context, createdBy string, skip, limit int) ([]*domain.Workflow, int64, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*domain.Workflow, 0)
+	var count int64
+	for _, wf := range r.byID {
+		if createdBy == "" || wf.CreatedBy == createdBy {
+			out = append(out, wf)
+			count++
+		}
+	}
+	// simple pagination
+	if skip >= len(out) {
+		return []*domain.Workflow{}, 0, nil
+	}
+	end := skip + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[skip:end], count, nil
+}
+
+// Create 实现 WorkflowRepository.Create。
+func (r *MemoryWorkflowRepo) Create(_ context.Context, wf *domain.Workflow) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *wf
+	r.byID[wf.ID] = &cp
+	return nil
+}
+
+// Update 实现 WorkflowRepository.Update。
+func (r *MemoryWorkflowRepo) Update(_ context.Context, wf *domain.Workflow) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byID[wf.ID]; !ok {
+		return apperr.NotFound("workflow not found: " + wf.ID)
+	}
+	cp := *wf
+	r.byID[wf.ID] = &cp
+	return nil
+}
+
+// Delete 实现 WorkflowRepository.Delete。
+func (r *MemoryWorkflowRepo) Delete(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.byID, id)
+	return nil
+}
+
+// MemoryWorkflowRunRepo 是 WorkflowRunRepository 的内存实现。
+type MemoryWorkflowRunRepo struct {
+	mu    sync.RWMutex
+	byID  map[string]*domain.WorkflowRun
+}
+
+// NewMemoryWorkflowRunRepo 创建内存工作流执行实例仓储。
+func NewMemoryWorkflowRunRepo() *MemoryWorkflowRunRepo {
+	return &MemoryWorkflowRunRepo{
+		byID: make(map[string]*domain.WorkflowRun),
+	}
+}
+
+// GetByID 实现 WorkflowRunRepository.GetByID。
+func (r *MemoryWorkflowRunRepo) GetByID(_ context.Context, id string) (*domain.WorkflowRun, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	run, ok := r.byID[id]
+	if !ok {
+		return nil, apperr.NotFound("workflow run not found: " + id)
+	}
+	cp := *run
+	return &cp, nil
+}
+
+// Create 实现 WorkflowRunRepository.Create。
+func (r *MemoryWorkflowRunRepo) Create(_ context.Context, run *domain.WorkflowRun) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *run
+	r.byID[run.ID] = &cp
+	return nil
+}
+
+// Update 实现 WorkflowRunRepository.Update。
+func (r *MemoryWorkflowRunRepo) Update(_ context.Context, run *domain.WorkflowRun) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byID[run.ID]; !ok {
+		return apperr.NotFound("workflow run not found: " + run.ID)
+	}
+	cp := *run
+	r.byID[run.ID] = &cp
+	return nil
+}
+
+// ListByWorkflow 实现 WorkflowRunRepository.ListByWorkflow。
+func (r *MemoryWorkflowRunRepo) ListByWorkflow(_ context.Context, workflowID string, skip, limit int) ([]*domain.WorkflowRun, int64, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*domain.WorkflowRun, 0)
+	var count int64
+	for _, run := range r.byID {
+		if run.WorkflowID == workflowID {
+			out = append(out, run)
+			count++
+		}
+	}
+	if skip >= len(out) {
+		return []*domain.WorkflowRun{}, 0, nil
+	}
+	end := skip + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[skip:end], count, nil
+}
+
+// MemoryTaskRunRepo 是 TaskRunRepository 的内存实现。
+type MemoryTaskRunRepo struct {
+	mu    sync.RWMutex
+	byID  map[string]*domain.TaskRun
+}
+
+// NewMemoryTaskRunRepo 创建内存任务执行实例仓储。
+func NewMemoryTaskRunRepo() *MemoryTaskRunRepo {
+	return &MemoryTaskRunRepo{
+		byID: make(map[string]*domain.TaskRun),
+	}
+}
+
+// GetByID 实现 TaskRunRepository.GetByID。
+func (r *MemoryTaskRunRepo) GetByID(_ context.Context, id string) (*domain.TaskRun, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tr, ok := r.byID[id]
+	if !ok {
+		return nil, apperr.NotFound("task run not found: " + id)
+	}
+	cp := *tr
+	return &cp, nil
+}
+
+// Create 实现 TaskRunRepository.Create。
+func (r *MemoryTaskRunRepo) Create(_ context.Context, tr *domain.TaskRun) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *tr
+	r.byID[tr.ID] = &cp
+	return nil
+}
+
+// Update 实现 TaskRunRepository.Update。
+func (r *MemoryTaskRunRepo) Update(_ context.Context, tr *domain.TaskRun) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byID[tr.ID]; !ok {
+		return apperr.NotFound("task run not found: " + tr.ID)
+	}
+	cp := *tr
+	r.byID[tr.ID] = &cp
+	return nil
+}
+
+// MemoryScheduleRepo 是 ScheduleRepository 的内存实现。
+type MemoryScheduleRepo struct {
+	mu    sync.RWMutex
+	byID  map[string]*domain.Schedule
+}
+
+// NewMemoryScheduleRepo 创建内存定时计划仓储。
+func NewMemoryScheduleRepo() *MemoryScheduleRepo {
+	return &MemoryScheduleRepo{
+		byID: make(map[string]*domain.Schedule),
+	}
+}
+
+// GetByID 实现 ScheduleRepository.GetByID。
+func (r *MemoryScheduleRepo) GetByID(_ context.Context, id string) (*domain.Schedule, error) {
+	r.mu.RLock()
+	defer r.mu.Unlock()
+	sch, ok := r.byID[id]
+	if !ok {
+		return nil, apperr.NotFound("schedule not found: " + id)
+	}
+	cp := *sch
+	return &cp, nil
+}
+
+// List 实现 ScheduleRepository.List。
+func (r *MemoryScheduleRepo) List(_ context.Context, skip, limit int) ([]*domain.Schedule, int64, error) {
+	r.mu.RLock()
+	defer r.mu.Unlock()
+	out := make([]*domain.Schedule, 0)
+	var count int64
+	for _, sch := range r.byID {
+		out = append(out, sch)
+		count++
+	}
+	if skip >= len(out) {
+		return []*domain.Schedule{}, 0, nil
+	}
+	end := skip + limit
+	if end > len(out) {
+		end = len(out)
+	}
+	return out[skip:end], count, nil
+}
+
+// Create 实现 ScheduleRepository.Create。
+func (r *MemoryScheduleRepo) Create(_ context.Context, sch *domain.Schedule) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *sch
+	r.byID[sch.ID] = &cp
+	return nil
+}
+
+// Update 实现 ScheduleRepository.Update。
+func (r *MemoryScheduleRepo) Update(_ context.Context, sch *domain.Schedule) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byID[sch.ID]; !ok {
+		return apperr.NotFound("schedule not found: " + sch.ID)
+	}
+	cp := *sch
+	r.byID[sch.ID] = &cp
+	return nil
+}
+
+// Delete 实现 ScheduleRepository.Delete。
+func (r *MemoryScheduleRepo) Delete(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.byID, id)
+	return nil
+}
+
+// UpdateNextRunTime 实现 ScheduleRepository.UpdateNextRunTime。
+func (r *MemoryScheduleRepo) UpdateNextRunTime(_ context.Context, id string, nextRun *time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sch, ok := r.byID[id]
+	if !ok {
+		return apperr.NotFound("schedule not found: " + id)
+	}
+	sch.NextRunAt = nextRun
+	sch.UpdatedAt = time.Now()
+	return nil
+}
+
+// ListToRun 实现 ScheduleRepository.ListToRun。
+func (r *MemoryScheduleRepo) ListToRun(_ context.Context, now time.Time, limit int) ([]*domain.Schedule, error) {
+	r.mu.RLock()
+	defer r.mu.Unlock()
+	out := make([]*domain.Schedule, 0)
+	for _, sch := range r.byID {
+		if sch.Enabled && sch.NextRunAt != nil && sch.NextRunAt.Before(now) {
+			out = append(out, sch)
+			if len(out) >= limit {
+				break
+			}
 		}
 	}
 	return out, nil

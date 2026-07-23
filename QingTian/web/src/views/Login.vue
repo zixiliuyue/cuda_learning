@@ -126,7 +126,7 @@ async function handleLogin() {
         </a-form-item>
         <a-button type="primary" long :loading="loading" @click="handleLogin">{{ t('login.loginBtn') }}</a-button>
         <div class="to-register">
-          {{ t('login.toRegister') }} <a-router-link to="/register">{{ t('register.registerBtn') }}</a-router-link>
+          {{ t('login.toRegister') }} <router-link to="/register" class="register-link">{{ t('register.registerBtn') }}</router-link>
         </div>
       </a-form>
     </a-card>
@@ -173,7 +173,8 @@ async function handleLogin() {
   text-align: center;
   color: var(--color-text-3);
 }
-.to-register a {
+.to-register a,
+.to-register .register-link {
   color: var(--color-primary);
   text-decoration: none;
 }

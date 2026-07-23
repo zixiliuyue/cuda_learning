@@ -5,9 +5,9 @@ import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   IconDashboard,
-  IconServer,
+  IconCloud,
   IconList,
-  IconHeartbeat,
+  IconBarChart,
   IconFolder
 } from '@arco-design/web-vue/es/icon'
 import { useAuthStore } from '../store/auth'
@@ -56,7 +56,7 @@ function logout() {
           <span>{{ t('menu.dashboard') }}</span>
         </a-menu-item>
         <a-menu-item key="nodes">
-          <icon-server />
+          <icon-cloud />
           <span>{{ t('menu.nodes') }}</span>
         </a-menu-item>
         <a-menu-item key="tasks">
@@ -64,12 +64,21 @@ function logout() {
           <span>{{ t('menu.tasks') }}</span>
         </a-menu-item>
         <a-menu-item key="metering">
-          <icon-heartbeat />
+          <icon-bar-chart />
           <span>{{ t('menu.metering') }}</span>
         </a-menu-item>
         <a-menu-item key="projects">
           <icon-folder />
           <span>{{ t('menu.projects') }}</span>
+        </a-menu-item>
+        <a-divider />
+        <a-menu-item key="workflows">
+          <icon-list />
+          <span>{{ t('menu.workflows') }}</span>
+        </a-menu-item>
+        <a-menu-item key="schedules">
+          <icon-cloud />
+          <span>{{ t('menu.schedules') }}</span>
         </a-menu-item>
       </a-menu>
     </a-layout-sider>

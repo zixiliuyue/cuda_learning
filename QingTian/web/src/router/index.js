@@ -25,7 +25,11 @@ const routes = [
       { path: 'nodes', component: () => import('../views/Nodes.vue'), meta: { titleKey: 'menu.nodes' } },
       { path: 'tasks', component: () => import('../views/Tasks.vue'), meta: { titleKey: 'menu.tasks' } },
       { path: 'metering', component: () => import('../views/Metering.vue'), meta: { titleKey: 'menu.metering' } },
-      { path: 'projects', component: () => import('../views/Projects.vue'), meta: { titleKey: 'menu.projects' } }
+      { path: 'projects', component: () => import('../views/Projects.vue'), meta: { titleKey: 'menu.projects' } },
+      { path: 'workflows', component: () => import('../views/WorkflowList.vue'), meta: { titleKey: 'menu.workflows' } },
+      { path: 'workflows/editor/:id', component: () => import('../views/WorkflowEditor.vue'), meta: { titleKey: 'workflow.title' } },
+      { path: 'workflows/runs/:id', component: () => import('../views/WorkflowRunDetail.vue'), meta: { titleKey: 'workflowRun.runTitle' } },
+      { path: 'schedules', component: () => import('../views/ScheduleManagement.vue'), meta: { titleKey: 'menu.schedules' } },
     ]
   },
   // 兜底：未匹配路由重定向到首页。
