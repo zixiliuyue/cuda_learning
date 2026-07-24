@@ -67,11 +67,6 @@ const columns = computed(() => [
   {
     title: t('schedule.status'),
     dataIndex: 'status',
-    render: ({ record }) => (
-      <a-tag color={record.enabled ? 'green' : 'gray'}>
-        {{ t(`schedule.${record.status.toLowerCase()}`) }}
-      </a-tag>
-    ),
   },
   {
     title: t('schedule.lastRunAt'),
@@ -86,20 +81,6 @@ const columns = computed(() => [
     dataIndex: 'actions',
     width: 200,
     fixed: 'right',
-    render: ({ record }) => (
-      <a-space>
-        <a-button size="small" onClick={() => handleTrigger(record)}>
-          <template #icon><icon-play-circle />
-          </template>
-          {{ t('schedule.triggerBtn') }}
-        </a-button>
-        <a-button size="small" status="danger" onClick={() => handleDelete(record)}>
-          <template #icon><icon-delete />
-          </template>
-          {{ t('common.delete') }}
-        </a-button>
-      </a-space>
-    ),
   },
 ])
 </script>
@@ -113,7 +94,7 @@ const columns = computed(() => [
           </template>
           {{ t('common.refresh') }}
         </a-button>
-        <a-button type="primary" onClick={() => window.location.href = '#/workflows'}>
+        <a-button type="primary" @click="() => window.location.href = '#/workflows'">
           <template #icon><icon-add />
           </template>
           {{ t('schedule.createBtn') }}
@@ -126,7 +107,27 @@ const columns = computed(() => [
       :columns="columns"
       :pagination="{ pageSize: 10 }"
       row-key="id"
-    />
+    >
+      <template #status="{ record }">
+        <a-tag :color="record.enabled ? 'green' : 'gray'">
+          {{ t(`schedule.${record.status.toLowerCase()}`) }}
+        </a-tag>
+      </template>
+      <template #actions="{ record }">
+        <a-space>
+          <a-button size="small" @click="() => handleTrigger(record)">
+            <template #icon><icon-play-circle />
+            </template>
+            {{ t('schedule.triggerBtn') }}
+          </a-button>
+          <a-button size="small" status="danger" @click="() => handleDelete(record)">
+            <template #icon><icon-delete />
+            </template>
+            {{ t('common.delete') }}
+          </a-button>
+        </a-space>
+      </template>
+    </a-table>
   </a-card>
 </template>
 

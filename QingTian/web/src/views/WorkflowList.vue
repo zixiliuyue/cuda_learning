@@ -87,32 +87,6 @@ const columns = computed(() => [
     dataIndex: 'actions',
     fixed: 'right',
     width: 200,
-    slots: {
-      render: ({ record }) => (
-        <a-space>
-          <a-button size="small" type="primary" onClick={() => handleRun(record)}>
-            <template #icon><icon-play-circle />
-            </template>
-            {t('workflow.runBtn')}
-          </a-button>
-          <a-button size="small" onClick={() => goToRuns(record.id)}>
-            <template #icon><icon-list />
-            </template>
-            {t('workflow.viewRuns')}
-          </a-button>
-          <a-button size="small" onClick={() => goToEditor(record.id)}>
-            <template #icon><icon-edit />
-            </template>
-            {t('common.edit')}
-          </a-button>
-          <a-button size="small" status="danger" onClick={() => handleDelete(record)}>
-            <template #icon><icon-delete />
-            </template>
-            {t('common.delete')}
-          </a-button>
-        </a-space>
-      ),
-    },
   },
 ])
 </script>
@@ -126,7 +100,7 @@ const columns = computed(() => [
           </template>
           {{ t('common.refresh') }}
         </a-button>
-        <a-button type="primary" onClick={() => goToEditor('new')}>
+        <a-button type="primary" @click="() => goToEditor('new')">
           <template #icon><icon-plus />
           </template>
           {{ t('workflow.createBtn') }}
@@ -139,7 +113,32 @@ const columns = computed(() => [
       :columns="columns"
       :pagination="{ pageSize: 10 }"
       row-key="id"
-    />
+    >
+      <template #actions="{ record }">
+        <a-space>
+          <a-button size="small" type="primary" @click="() => handleRun(record)">
+            <template #icon><icon-play-circle />
+            </template>
+            {{ t('workflow.runBtn') }}
+          </a-button>
+          <a-button size="small" @click="() => goToRuns(record.id)">
+            <template #icon><icon-list />
+            </template>
+            {{ t('workflow.viewRuns') }}
+          </a-button>
+          <a-button size="small" @click="() => goToEditor(record.id)">
+            <template #icon><icon-edit />
+            </template>
+            {{ t('common.edit') }}
+          </a-button>
+          <a-button size="small" status="danger" @click="() => handleDelete(record)">
+            <template #icon><icon-delete />
+            </template>
+            {{ t('common.delete') }}
+          </a-button>
+        </a-space>
+      </template>
+    </a-table>
   </a-card>
 </template>
 

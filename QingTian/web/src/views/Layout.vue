@@ -1,15 +1,8 @@
 <script setup>
 // 主框架：左侧菜单 + 顶部栏 + 内容区。
-import { computed, onMounted } from 'vue'
+import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import {
-  IconDashboard,
-  IconCloud,
-  IconList,
-  IconBarChart,
-  IconFolder
-} from '@arco-design/web-vue/es/icon'
 import { useAuthStore } from '../store/auth'
 import { useUiStore } from '../store/ui'
 import LocaleThemeSwitch from '../components/LocaleThemeSwitch.vue'

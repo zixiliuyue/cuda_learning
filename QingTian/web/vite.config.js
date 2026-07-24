@@ -5,6 +5,13 @@ import vue from '@vitejs/plugin-vue'
 const apiHost = process.env.VITE_API_HOST || 'http://localhost:8080'
 export default defineConfig({
   plugins: [vue()],
+  optimizeDeps: {
+    esbuildOptions: {
+      loader: {
+        '.js': 'jsx',
+      },
+    },
+  },
   server: {
     port: 5173,
     host: '0.0.0.0',
