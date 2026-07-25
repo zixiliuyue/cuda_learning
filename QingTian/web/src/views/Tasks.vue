@@ -196,7 +196,7 @@ async function downloadResult() {
 async function loadTasks() {
   loading.value = true
   try {
-    tasks.value = await taskApi.list()
+    tasks.value = (await taskApi.list()) || []
   } catch {
     tasks.value = []
   } finally {

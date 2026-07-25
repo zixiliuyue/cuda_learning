@@ -20,7 +20,7 @@ import (
 
 // setupTestServer 组装一个使用内存实现的测试 HTTP 服务。
 func setupTestServer() (http.Handler, *auth.TokenManager) {
-	tm := auth.NewTokenManager("test-secret", time.Hour)
+	tm := auth.NewTokenManager("test-secret", time.Hour, 24*time.Hour)
 	resLedger := ledger.New()
 	sched := scheduler.New(resLedger, "binpack")
 	memCache := cache.NewMemoryCache()
@@ -76,7 +76,7 @@ func TestRegisterLoginAndSubmitTask(t *testing.T) {
 
 	// 注册。
 	rec := doJSON(h, http.MethodPost, "/api/v1/auth/register", "", map[string]interface{}{
-		"username": "dev", "password": "pass123", "role": domain.RoleDeveloper,
+		"username": "dev", "password": "pass1234", "role": domain.RoleDeveloper,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("注册应返回 201，实际 %d，body=%s", rec.Code, rec.Body.String())
@@ -84,7 +84,7 @@ func TestRegisterLoginAndSubmitTask(t *testing.T) {
 
 	// 登录，取令牌。
 	rec = doJSON(h, http.MethodPost, "/api/v1/auth/login", "", map[string]string{
-		"username": "dev", "password": "pass123",
+		"username": "dev", "password": "pass1234",
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("登录应返回 200，实际 %d", rec.Code)
@@ -102,11 +102,10 @@ func TestRegisterLoginAndSubmitTask(t *testing.T) {
 
 	// 提交任务。
 	rec = doJSON(h, http.MethodPost, "/api/v1/tasks", token, map[string]interface{}{
-		"name":  "job1",
-		"image": "cuda:13.1",
-		"resource": map[string]interface{}{
-			"gpu_count": 1, "memory_mb": 4096,
-		},
+		"name":      "job1",
+		"image":     "cuda:13.1",
+		"gpu_count": 1,
+		"memory_mb": 4096,
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("提交任务应返回 201，实际 %d，body=%s", rec.Code, rec.Body.String())

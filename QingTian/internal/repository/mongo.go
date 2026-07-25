@@ -451,6 +451,18 @@ func (r *MongoProjectRepo) Update(ctx context.Context, p *domain.Project) error 
 	return nil
 }
 
+// Delete 实现 ProjectRepository.Delete。
+func (r *MongoProjectRepo) Delete(ctx context.Context, id string) error {
+	res, err := r.col.DeleteOne(ctx, bson.M{"_id": id})
+	if err != nil {
+		return err
+	}
+	if res.DeletedCount == 0 {
+		return apperr.NotFound("项目不存在: " + id)
+	}
+	return nil
+}
+
 // ListByMember 实现 ProjectRepository.ListByMember。
 func (r *MongoProjectRepo) ListByMember(ctx context.Context, userID string) ([]*domain.Project, error) {
 	cur, err := r.col.Find(ctx, bson.M{"members": userID})

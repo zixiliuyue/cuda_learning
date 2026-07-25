@@ -466,6 +466,17 @@ func (r *MemoryProjectRepo) Update(_ context.Context, p *domain.Project) error {
 	return nil
 }
 
+// Delete 实现 ProjectRepository.Delete。
+func (r *MemoryProjectRepo) Delete(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.projects[id]; !ok {
+		return apperr.NotFound("项目不存在: " + id)
+	}
+	delete(r.projects, id)
+	return nil
+}
+
 // ListByMember 实现 ProjectRepository.ListByMember。
 func (r *MemoryProjectRepo) ListByMember(_ context.Context, userID string) ([]*domain.Project, error) {
 	r.mu.RLock()

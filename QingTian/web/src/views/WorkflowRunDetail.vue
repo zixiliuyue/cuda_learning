@@ -3,7 +3,6 @@ import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { workflowApi } from '../api'
-import { statusColorMap } from './../utils/status'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -42,15 +41,15 @@ onMounted(() => {
 <template>
   <a-card v-if="!loading" :title="`${t('workflowRun.runTitle')} #${run.id}`" class="run-detail-card">
     <a-descriptions :column="2" border :data="run">
-      <a-descriptions-item label="{{ t('workflow.name') }}" :content="run.name" />
-      <a-descriptions-item label="{{ t('workflow.status') }}">
-        <a-tag :color="statusBadge(run.status)">{{ t(`workflowRun.${status.toLowerCase()}`) }}</a-tag>
+      <a-descriptions-item :label="t('workflow.name')" :content="run.name" />
+      <a-descriptions-item :label="t('workflow.status')">
+        <a-tag :color="statusBadge(run.status)">{{ t(`workflowRun.${run.status.toLowerCase()}`) }}</a-tag>
       </a-descriptions-item>
-      <a-descriptions-item label="{{ t('workflowRun.triggerType') }}" :content="t(`workflowRun.${run.trigger.type.toLowerCase()}`)" />
-      <a-descriptions-item label="{{ t('workflowRun.createdBy') }}" :content="run.createdBy" />
-      <a-descriptions-item label="{{ t('workflowRun.startTime') }}" :content="run.startedAt" />
-      <a-descriptions-item label="{{ t('workflowRun.endTime') }}" :content="run.finishedAt" />
-      <a-descriptions-item label="{{ t('workflowRun.duration') }}" :content="run.duration" />
+      <a-descriptions-item :label="t('workflowRun.triggerType')" :content="t(`workflowRun.${run.trigger.type.toLowerCase()}`)" />
+      <a-descriptions-item :label="t('workflowRun.createdBy')" :content="run.createdBy" />
+      <a-descriptions-item :label="t('workflowRun.startTime')" :content="run.startedAt" />
+      <a-descriptions-item :label="t('workflowRun.endTime')" :content="run.finishedAt" />
+      <a-descriptions-item :label="t('workflowRun.duration')" :content="run.duration" />
     </a-descriptions>
 
     <a-divider />

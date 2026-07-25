@@ -20,7 +20,7 @@ import (
 
 // setupFullServer 组装注入了全部扩展能力（企业版）的测试服务。
 func setupFullServer(edition domain.Edition) (http.Handler, *auth.TokenManager) {
-	tm := auth.NewTokenManager("test-secret", time.Hour)
+	tm := auth.NewTokenManager("test-secret", time.Hour, 24*time.Hour)
 	resLedger := ledger.New()
 	sched := scheduler.New(resLedger, "binpack")
 	memCache := cache.NewMemoryCache()

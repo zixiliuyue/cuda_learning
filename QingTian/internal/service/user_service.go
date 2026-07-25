@@ -46,6 +46,14 @@ func (s *UserService) Register(ctx context.Context, username, password string, r
 	if username == "" || password == "" {
 		return nil, apperr.InvalidArgument("用户名和密码不能为空")
 	}
+	// 密码强度校验：bcrypt 会截断超过 72 字节的输入，因此上限设为 72 字节，
+	// 下限 8 位是常见最低要求，避免弱口令被暴力破解。
+	if len(password) < 8 {
+		return nil, apperr.InvalidArgument("密码长度不能少于 8 位")
+	}
+	if len(password) > 72 {
+		return nil, apperr.InvalidArgument("密码长度不能超过 72 字节")
+	}
 	// 先查重：用户名已存在则直接返回冲突。
 	// 这是确定性业务规则，不依赖数据库唯一索引，避免因缺索引导致重复账号。
 	// 仓储层的唯一索引作为并发场景下的最后防线（见 mongo.go EnsureIndexes）。

@@ -60,6 +60,10 @@ export const projectApi = {
   // 创建新项目
   create: (name) => request.post('/projects', { name }),
   // 添加项目成员
-  addMember: (projectId, username) => request.post(`/projects/${projectId}/members`, { username })
+  addMember: (projectId, username) => request.post(`/projects/${projectId}/members`, { username }),
+  // 删除项目（仅所有者）
+  delete: (projectId) => request.delete(`/projects/${projectId}`),
+  // 重命名项目（仅所有者）
+  rename: (projectId, name) => request.put(`/projects/${projectId}`, { name })
 }
 export { workflowApi, scheduleApi } from './workflow'

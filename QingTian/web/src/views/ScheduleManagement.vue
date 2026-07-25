@@ -2,15 +2,33 @@
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Message, Modal } from '@arco-design/web-vue'
-import { scheduleApi } from '../api'
-import IconDelete from '@arco-design/web-vue/es/icon/icon-delete'
-import IconEdit from '@arco-design/web-vue/es/icon/icon-edit'
-import IconPlayCircle from '@arco-design/web-vue/es/icon/icon-play-circle'
+import { scheduleApi, workflowApi } from '../api'
 
 const { t } = useI18n()
 
 const loading = ref(false)
 const data = ref([])
+const workflows = ref([])
+const createModalVisible = ref(false)
+const createForm = ref({
+  name: '',
+  description: '',
+  workflowId: '',
+  cronExpr: '0 0 * * *',
+  timezone: 'Asia/Shanghai',
+  parameters: {},
+  enabled: true,
+})
+
+// 加载工作流列表（供新建调度选择）
+async function loadWorkflows() {
+  try {
+    const res = await workflowApi.list()
+    workflows.value = res.items || []
+  } catch (e) {
+    workflows.value = []
+  }
+}
 
 async function loadData() {
   loading.value = true
@@ -21,6 +39,30 @@ async function loadData() {
     data.value = []
   } finally {
     loading.value = false
+  }
+}
+
+function openCreateModal() {
+  createForm.value = { name: '', description: '', workflowId: '', cronExpr: '0 0 * * *', timezone: 'Asia/Shanghai', parameters: {}, enabled: true }
+  createModalVisible.value = true
+}
+
+async function handleCreate() {
+  if (!createForm.value.name.trim()) {
+    Message.warning(t('common.required'))
+    return
+  }
+  if (!createForm.value.workflowId) {
+    Message.warning('请选择关联的工作流')
+    return
+  }
+  try {
+    await scheduleApi.create(createForm.value)
+    Message.success(t('common.success'))
+    createModalVisible.value = false
+    loadData()
+  } catch (e) {
+    // Error handled by request interceptor
   }
 }
 
@@ -49,6 +91,7 @@ function handleTrigger(item) {
 
 onMounted(() => {
   loadData()
+  loadWorkflows()
 })
 
 const columns = computed(() => [
@@ -67,6 +110,7 @@ const columns = computed(() => [
   {
     title: t('schedule.status'),
     dataIndex: 'status',
+    slotName: 'status',
   },
   {
     title: t('schedule.lastRunAt'),
@@ -79,6 +123,7 @@ const columns = computed(() => [
   {
     title: t('common.actions'),
     dataIndex: 'actions',
+    slotName: 'actions',
     width: 200,
     fixed: 'right',
   },
@@ -94,8 +139,8 @@ const columns = computed(() => [
           </template>
           {{ t('common.refresh') }}
         </a-button>
-        <a-button type="primary" @click="() => window.location.href = '#/workflows'">
-          <template #icon><icon-add />
+        <a-button type="primary" @click="openCreateModal">
+          <template #icon><icon-plus />
           </template>
           {{ t('schedule.createBtn') }}
         </a-button>
@@ -110,7 +155,7 @@ const columns = computed(() => [
     >
       <template #status="{ record }">
         <a-tag :color="record.enabled ? 'green' : 'gray'">
-          {{ t(`schedule.${record.status.toLowerCase()}`) }}
+          {{ record.status ? t(`schedule.${record.status.toLowerCase()}`) : '-' }}
         </a-tag>
       </template>
       <template #actions="{ record }">
@@ -128,6 +173,28 @@ const columns = computed(() => [
         </a-space>
       </template>
     </a-table>
+
+    <a-modal v-model:visible="createModalVisible" :title="t('schedule.createBtn')" @ok="handleCreate" width="520px">
+      <a-form :model="createForm" layout="vertical">
+        <a-form-item field="name" :label="t('schedule.name')" required>
+          <a-input v-model="createForm.name" placeholder="请输入调度名称" />
+        </a-form-item>
+        <a-form-item field="workflowId" :label="t('schedule.workflow')" required>
+          <a-select v-model="createForm.workflowId" placeholder="请选择关联的工作流">
+            <a-option v-for="wf in workflows" :key="wf.id" :value="wf.id">{{ wf.name }}</a-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item field="cronExpr" :label="t('schedule.cronExpr')" required>
+          <a-input v-model="createForm.cronExpr" placeholder="秒 分 时 日 月 周，如 0 0 2 * * * 表示每天2点" />
+        </a-form-item>
+        <a-form-item field="description" :label="t('schedule.description') || '描述'">
+          <a-textarea v-model="createForm.description" :rows="2" placeholder="可选" />
+        </a-form-item>
+        <a-form-item field="enabled" label="启用">
+          <a-switch v-model="createForm.enabled" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </a-card>
 </template>
 

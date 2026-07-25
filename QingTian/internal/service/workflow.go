@@ -13,6 +13,7 @@ import (
 	"qingtian/internal/domain"
 	"qingtian/internal/repository"
 	"qingtian/pkg/apperr"
+	"qingtian/pkg/idgen"
 )
 
 // WorkflowService 工作流管理服务
@@ -40,6 +41,10 @@ func (s *WorkflowService) List(ctx context.Context, createdBy string, skip, limi
 
 // Create 创建工作流定义
 func (s *WorkflowService) Create(ctx context.Context, wf *domain.Workflow) error {
+	// 生成唯一 ID（前端未提供时），避免空 _id 导致 MongoDB 主键冲突。
+	if wf.ID == "" {
+		wf.ID = idgen.New("wf")
+	}
 	// 校验 DAG
 	if err := s.ValidateDAG(wf); err != nil {
 		return err
@@ -184,6 +189,7 @@ func (e *WorkflowEngine) Run(
 
 	// 2. 创建执行实例
 	run := &domain.WorkflowRun{
+		ID:          idgen.New("wfrun"),
 		WorkflowID:  workflowID,
 		Name:        wf.Name,
 		Parameters:  params,

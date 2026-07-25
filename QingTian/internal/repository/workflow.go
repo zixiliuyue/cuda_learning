@@ -273,7 +273,9 @@ func (r *mongoScheduleRepo) GetByID(ctx context.Context, id string) (*domain.Sch
 func (r *mongoScheduleRepo) List(ctx context.Context, skip, limit int) ([]*domain.Schedule, int64, error) {
 	var schedules []*domain.Schedule
 	findOpts := options.Find().SetSkip(int64(skip)).SetLimit(int64(limit))
-	cursor, err := r.coll.Find(ctx, findOpts)
+	// 注意：Find 的第二个参数是查询过滤器，必须显式传入 bson.D{}（匹配全部），
+	// 否则会把 FindOptions 误当作过滤器，导致查不到任何文档。
+	cursor, err := r.coll.Find(ctx, bson.D{}, findOpts)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -284,6 +286,9 @@ func (r *mongoScheduleRepo) List(ctx context.Context, skip, limit int) ([]*domai
 	total, err := r.coll.CountDocuments(ctx, bson.D{})
 	if err != nil {
 		return nil, 0, err
+	}
+	if schedules == nil {
+		schedules = []*domain.Schedule{}
 	}
 	return schedules, total, nil
 }

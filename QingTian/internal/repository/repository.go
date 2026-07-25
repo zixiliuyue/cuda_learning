@@ -88,6 +88,8 @@ type ProjectRepository interface {
 	GetByID(ctx context.Context, id string) (*domain.Project, error)
 	// Update 全量更新项目。
 	Update(ctx context.Context, p *domain.Project) error
+	// Delete 删除项目（软删，仅项目所有者可操作）。
+	Delete(ctx context.Context, id string) error
 	// ListByMember 返回某用户所属的全部项目。
 	ListByMember(ctx context.Context, userID string) ([]*domain.Project, error)
 }

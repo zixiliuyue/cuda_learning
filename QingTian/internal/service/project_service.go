@@ -97,3 +97,34 @@ func (s *ProjectService) Get(ctx context.Context, projectID, requester string) (
 func (s *ProjectService) ListMine(ctx context.Context, userID string) ([]*domain.Project, error) {
 	return s.repo.ListByMember(ctx, userID)
 }
+
+// Delete 删除项目，仅项目所有者可操作。
+func (s *ProjectService) Delete(ctx context.Context, projectID, operator string) error {
+	p, err := s.repo.GetByID(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if p.OwnerID != operator {
+		return apperr.Forbidden("仅项目所有者可删除项目")
+	}
+	return s.repo.Delete(ctx, projectID)
+}
+
+// Rename 修改项目名称，仅项目所有者可操作。
+func (s *ProjectService) Rename(ctx context.Context, projectID, operator, name string) (*domain.Project, error) {
+	if name == "" {
+		return nil, apperr.InvalidArgument("项目名称不能为空")
+	}
+	p, err := s.repo.GetByID(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if p.OwnerID != operator {
+		return nil, apperr.Forbidden("仅项目所有者可修改项目")
+	}
+	p.Name = name
+	if err := s.repo.Update(ctx, p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}

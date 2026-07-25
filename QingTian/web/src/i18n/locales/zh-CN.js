@@ -13,6 +13,8 @@ export default {
     required: '必填',
     success: '成功',
     upload: '上传',
+    edit: '编辑',
+    delete: '删除',
   },
   // 侧边菜单。
   menu: {

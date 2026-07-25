@@ -1,6 +1,6 @@
 <script setup>
 // 计量计费页面：展示全局统计和当前用户的用量历史。
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { meteringApi, quotaApi } from '../api'
 import { useAuthStore } from '../store/auth'
@@ -16,6 +16,14 @@ const stats = ref({
 })
 const myUsage = ref([])
 const myQuota = ref(null)
+
+// 列定义使用 computed 而非 <a-table-column> 子组件，避免 Arco 组件注册问题。
+const usageColumns = computed(() => [
+  { title: t('metering.date'), dataIndex: 'date', width: 180 },
+  { title: t('metering.taskCount'), dataIndex: 'taskCount', width: 120 },
+  { title: t('metering.gpuHours'), dataIndex: 'gpuHours', width: 120 },
+  { title: t('metering.cost'), dataIndex: 'cost', width: 120 },
+])
 
 // 加载计量看板和我的配额。
 async function loadData() {
@@ -102,12 +110,7 @@ onMounted(loadData)
 
     <!-- 我的用量列表 -->
     <a-card :title="t('metering.myUsage')" style="margin-top: 16px">
-      <a-table :data="myUsage" :loading="loading" row-key="date" :pagination="{ pageSize: 10 }">
-        <a-table-column :title="t('metering.date')" data-index="date" :width="180" />
-        <a-table-column :title="t('metering.taskCount')" data-index="taskCount" :width="120" />
-        <a-table-column :title="t('metering.gpuHours')" data-index="gpuHours" :width="120" />
-        <a-table-column :title="t('metering.cost')" data-index="cost" :width="120" />
-      </a-table>
+      <a-table :data="myUsage" :columns="usageColumns" :loading="loading" row-key="date" :pagination="{ pageSize: 10 }" />
     </a-card>
   </a-spin>
 </template>

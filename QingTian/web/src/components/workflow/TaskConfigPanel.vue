@@ -129,17 +129,17 @@ function setRequirements(value) {
 <template>
   <div class="config-panel">
     <a-form :model="props.modelValue" layout="vertical">
-      <a-form-item label="{{ t('workflowNode.id') }}">
+      <a-form-item :label="t('workflowNode.id')">
         <a-input v-model="props.modelValue.id" disabled />
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.name') }}">
-        <a-input v-model="props.modelValue.name" placeholder="{{ t('workflowNode.name') }}" />
+      <a-form-item :label="t('workflowNode.name')">
+        <a-input v-model="props.modelValue.name" :placeholder="t('workflowNode.name')" />
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.description') }}">
-        <a-textarea v-model="props.modelValue.description" placeholder="{{ t('workflowNode.description') }}" />
+      <a-form-item :label="t('workflowNode.description')">
+        <a-textarea v-model="props.modelValue.description" :placeholder="t('workflowNode.description')" />
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.executorType') }}">
-        <a-select v-model="props.modelValue.executorType" placeholder="{{ t('workflowNode.executorType') }}">
+      <a-form-item :label="t('workflowNode.executorType')">
+        <a-select v-model="props.modelValue.executorType" :placeholder="t('workflowNode.executorType')">
           <a-option value="container">{{ t('workflowNode.container') }}</a-option>
           <a-option value="shell">{{ t('workflowNode.shell') }}</a-option>
           <a-option value="python">{{ t('workflowNode.python') }}</a-option>
@@ -150,32 +150,32 @@ function setRequirements(value) {
 
     <!-- 容器配置 -->
     <template v-if="showForm.container">
-      <a-form-item label="{{ t('workflowNode.image') }}">
+      <a-form-item :label="t('workflowNode.image')">
         <a-input v-model="props.modelValue.containerConfig.image" placeholder="nginx:latest" />
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.command') }}">
-        <a-input v-model="props.modelValue.containerConfig.command" placeholder="[""]" />
+      <a-form-item :label="t('workflowNode.command')">
+        <a-input v-model="props.modelValue.containerConfig.command" placeholder='[""]' />
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.args') }}">
-        <a-input v-model="props.modelValue.containerConfig.args" placeholder="[""]" />
+      <a-form-item :label="t('workflowNode.args')">
+        <a-input v-model="props.modelValue.containerConfig.args" placeholder='[""]' />
       </a-form-item>
     </template>
 
     <!-- Shell 配置 -->
     <template v-if="showForm.shell">
-      <a-form-item label="{{ t('workflowNode.script') }}">
+      <a-form-item :label="t('workflowNode.script')">
         <a-textarea
           v-model="props.modelValue.shellConfig.script"
           :rows="12"
-          placeholder="{{ t('workflowNode.script') }}"
+          :placeholder="t('workflowNode.script')"
         />
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.environment') }}">
+      <a-form-item :label="t('workflowNode.environment')">
         <div class="env-list">
           <div v-for="(item, index) in envItems" :key="index" class="env-item">
             <a-space>
-              <a-input v-model="item.key" placeholder="{{ t('workflowNode.envKey') }}" style="width: 120px" />
-              <a-input v-model="item.value" placeholder="{{ t('workflowNode.envValue') }}" />
+              <a-input v-model="item.key" :placeholder="t('workflowNode.envKey')" style="width: 120px" />
+              <a-input v-model="item.value" :placeholder="t('workflowNode.envValue')" />
               <a-button type="text" status="danger" @click="deleteEnv(item.key)">
                 <icon-delete />
               </a-button>
@@ -192,27 +192,27 @@ function setRequirements(value) {
 
     <!-- Python 配置 -->
     <template v-if="showForm.python">
-      <a-form-item label="{{ t('workflowNode.script') }}">
+      <a-form-item :label="t('workflowNode.script')">
         <a-textarea
           v-model="props.modelValue.pythonConfig.script"
           :rows="12"
-          placeholder="{{ t('workflowNode.script') }}"
+          :placeholder="t('workflowNode.script')"
         />
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.requirements') }}">
+      <a-form-item :label="t('workflowNode.requirements')">
         <a-textarea
           :model-value="getRequirements()"
           @update:model-value="setRequirements"
           :rows="4"
-          placeholder="{{ t('workflowNode.requirements') }}"
+          :placeholder="t('workflowNode.requirements')"
         />
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.environment') }}">
+      <a-form-item :label="t('workflowNode.environment')">
         <div class="env-list">
           <div v-for="(item, index) in envItems" :key="index" class="env-item">
             <a-space>
-              <a-input v-model="item.key" placeholder="{{ t('workflowNode.envKey') }}" style="width: 120px" />
-              <a-input v-model="item.value" placeholder="{{ t('workflowNode.envValue') }}" />
+              <a-input v-model="item.key" :placeholder="t('workflowNode.envKey')" style="width: 120px" />
+              <a-input v-model="item.value" :placeholder="t('workflowNode.envValue')" />
               <a-button type="text" status="danger" @click="deleteEnv(item.key)">
                 <icon-delete />
               </a-button>
@@ -229,10 +229,10 @@ function setRequirements(value) {
 
     <!-- API 配置 -->
     <template v-if="showForm.api">
-      <a-form-item label="{{ t('workflowNode.url') }}">
+      <a-form-item :label="t('workflowNode.url')">
         <a-input v-model="props.modelValue.apiConfig.url" placeholder="https://example.com/api" />
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.method') }}">
+      <a-form-item :label="t('workflowNode.method')">
         <a-select v-model="props.modelValue.apiConfig.method" placeholder="GET">
           <a-option value="GET">GET</a-option>
           <a-option value="POST">POST</a-option>
@@ -240,12 +240,12 @@ function setRequirements(value) {
           <a-option value="DELETE">DELETE</a-option>
         </a-select>
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.headers') }}">
+      <a-form-item :label="t('workflowNode.headers')">
         <div class="env-list">
           <div v-for="(item, index) in envItems" :key="index" class="env-item">
             <a-space>
-              <a-input v-model="item.key" placeholder="{{ t('workflowNode.envKey') }}" style="width: 120px" />
-              <a-input v-model="item.value" placeholder="{{ t('workflowNode.envValue') }}" />
+              <a-input v-model="item.key" :placeholder="t('workflowNode.envKey')" style="width: 120px" />
+              <a-input v-model="item.value" :placeholder="t('workflowNode.envValue')" />
               <a-button type="text" status="danger" @click="deleteEnv(item.key)">
                 <icon-delete />
               </a-button>
@@ -258,46 +258,47 @@ function setRequirements(value) {
           </a-button>
         </div>
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.body') }}">
+      <a-form-item :label="t('workflowNode.body')">
         <a-textarea
           v-model="props.modelValue.apiConfig.body"
           :rows="6"
-          placeholder="{{ t('workflowNode.body') }}"
+          :placeholder="t('workflowNode.body')"
         />
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.timeout') }}">
-        <a-input-number v-model="props.modelValue.apiConfig.timeout" :min="1" :step="10" placeholder="30" />
+      <a-form-item :label="t('workflowNode.timeout')">
+        <a-input-number v-model="props.modelValue.apiConfig.timeout" :min="1" :step="10" placeholder="30">
           <template #extra>
             {{ t('workflowNode.timeout') }} (seconds)
           </template>
         </a-input-number>
       </a-form-item>
-      <a-form-item label="{{ t('workflowNode.successCodes') }}">
-        <a-input v-model="props.modelValue.apiConfig.successCodes" placeholder="200 201" />
-        <template #extra>
-          {{ t('workflowNode.successCodes') }} (space separated)
-        </template>
-      </a-input>
+      <a-form-item :label="t('workflowNode.successCodes')">
+        <a-input v-model="props.modelValue.apiConfig.successCodes" placeholder="200 201">
+          <template #extra>
+            {{ t('workflowNode.successCodes') }} (space separated)
+          </template>
+        </a-input>
+      </a-form-item>
     </template>
 
     <!-- 公共资源配置 -->
     <a-divider />
-    <a-form-item label="{{ t('workflowNode.gpuCount') }}">
+    <a-form-item :label="t('workflowNode.gpuCount')">
       <a-input-number v-model="props.modelValue.resources.gpuCount" :min="0" :step="1" />
     </a-form-item>
-    <a-form-item label="{{ t('workflowNode.gpuMemory') }}">
+    <a-form-item :label="t('workflowNode.gpuMemory')">
       <a-input v-model="props.modelValue.resources.gpuMemory" placeholder="16GB" />
     </a-form-item>
-    <a-form-item label="{{ t('workflowNode.gpuModel') }}">
+    <a-form-item :label="t('workflowNode.gpuModel')">
       <a-input v-model="props.modelValue.resources.gpuModel" placeholder="RTX 3090" />
     </a-form-item>
-    <a-form-item label="{{ t('workflowNode.timeout') }}">
+    <a-form-item :label="t('workflowNode.timeout')">
       <a-input-number v-model="props.modelValue.timeout" :min="0" :step="300" />
       <template #extra>
         0 means unlimited
       </template>
     </a-form-item>
-    <a-form-item label="{{ t('workflowNode.retries') }}">
+    <a-form-item :label="t('workflowNode.retries')">
       <a-input-number v-model="props.modelValue.retries" :min="0" :step="1" />
     </a-form-item>
   </div>

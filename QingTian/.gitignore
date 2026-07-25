@@ -10,3 +10,9 @@ web/dist/
 # 环境与密钥
 *.local
 .env
+.deploy_credentials.json
+
+# 部署脚本生成物
+.deploy_logs/
+docker-compose.override.yml
+.deploy_run.log

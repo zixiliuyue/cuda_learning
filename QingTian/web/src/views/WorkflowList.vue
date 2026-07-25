@@ -85,6 +85,7 @@ const columns = computed(() => [
   {
     title: t('common.actions'),
     dataIndex: 'actions',
+    slotName: 'actions',
     fixed: 'right',
     width: 200,
   },

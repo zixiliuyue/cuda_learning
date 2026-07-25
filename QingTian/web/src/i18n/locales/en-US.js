@@ -13,6 +13,8 @@ export default {
     success: 'Success',
     actions: 'Actions',
     required: 'Required',
+    edit: 'Edit',
+    delete: 'Delete',
   },
   // Sidebar menu.
   menu: {

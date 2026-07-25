@@ -66,11 +66,11 @@ function logout() {
         </a-menu-item>
         <a-divider />
         <a-menu-item key="workflows">
-          <icon-list />
+          <icon-branch />
           <span>{{ t('menu.workflows') }}</span>
         </a-menu-item>
         <a-menu-item key="schedules">
-          <icon-cloud />
+          <icon-clock-circle />
           <span>{{ t('menu.schedules') }}</span>
         </a-menu-item>
       </a-menu>

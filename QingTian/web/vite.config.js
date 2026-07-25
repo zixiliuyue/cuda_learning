@@ -31,6 +31,9 @@ export default defineConfig({
     // 将体积较大的第三方依赖拆分为独立 chunk，利用浏览器缓存、
     // 避免业务代码更新导致整包（含庞大 UI 库）失效重下。
     chunkSizeWarningLimit: 800,
+    // 显式开启 CSS 代码分割：各异步组件的样式随其 chunk 按需加载，
+    // 避免首屏一次性拉取全部样式（Vite 默认即为 true，此处显式声明以固化行为）。
+    cssCodeSplit: true,
     rollupOptions: {
       output: {
         manualChunks: {
@@ -38,6 +41,9 @@ export default defineConfig({
           vue: ['vue', 'vue-router', 'pinia', 'vue-i18n'],
           // Arco Design UI 库体积最大，单独拆分以最大化缓存命中。
           arco: ['@arco-design/web-vue'],
+          // 工作流画布库（@vue-flow/core）体积较大且仅编辑器用到，
+          // 单独拆分避免其与编辑器业务代码耦合、提升缓存命中。
+          vueflow: ['@vue-flow/core'],
           // 网络库。
           axios: ['axios']
         }

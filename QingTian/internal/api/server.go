@@ -4,6 +4,9 @@
 package api
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -16,6 +19,18 @@ import (
 	"qingtian/pkg/apperr"
 	"qingtian/pkg/httpx"
 )
+
+// ssoStateCookie 是承载 OIDC state 的一次性 Cookie 名称，用于回调防 CSRF。
+const ssoStateCookie = "qt_sso_state"
+
+// randomState 生成 32 字节的加密安全随机 state，返回十六进制字符串。
+func randomState() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
 
 // 权限常量定义，便于统一修改
 const (
@@ -189,6 +204,8 @@ func (s *Server) Routes(authMW Middleware) http.Handler {
 	mux.Handle("POST /api/v1/projects", authed(s.handleCreateProject))
 	mux.Handle("GET /api/v1/projects", authed(s.handleListProjects))
 	mux.Handle("POST /api/v1/projects/{id}/members", authed(s.handleAddProjectMember))
+	mux.Handle("DELETE /api/v1/projects/{id}", authed(s.handleDeleteProject))
+	mux.Handle("PUT /api/v1/projects/{id}", authed(s.handleRenameProject))
 
 	// 任务模板
 	mux.Handle("POST /api/v1/templates", authed(s.handleCreateTemplate))
@@ -478,6 +495,10 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
+	// 保证 List 接口无数据时返回空数组而非 null，稳定前端契约。
+	if tasks == nil {
+		tasks = []*domain.Task{}
+	}
 	httpx.WriteJSON(w, http.StatusOK, tasks)
 }
 
@@ -541,6 +562,9 @@ func (s *Server) handleListMyTemplates(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
+	}
+	if templates == nil {
+		templates = []*domain.TaskTemplate{}
 	}
 	httpx.WriteJSON(w, http.StatusOK, templates)
 }
@@ -684,9 +708,22 @@ func (s *Server) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, apperr.NotFound("SSO not enabled"))
 		return
 	}
-	// Generate random state for CSRF protection
-	// In production, you should store state in session or cookie for validation
-	state := "state" // TODO: In real implementation, generate random and store in cookie
+	// 生成随机 state 防止登录 CSRF，并写入 HttpOnly Cookie，
+	// 回调时与 URL 中的 state 比对，确保回调确由本次登录发起。
+	state, err := randomState()
+	if err != nil {
+		httpx.WriteError(w, apperr.Internal("生成 state 失败"))
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     ssoStateCookie,
+		Value:    state,
+		Path:     "/",
+		MaxAge:   300, // 5 分钟内完成回调
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
 	url := s.sso.GetAuthorizationURL(state)
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
@@ -706,7 +743,23 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 	code := r.URL.Query().Get("code")
 	state := r.URL.Query().Get("state")
-	_ = state // TODO: Validate state against stored value to prevent CSRF
+
+	// 校验 state：必须与登录时写入的 Cookie 一致，防止登录 CSRF / 授权码注入。
+	cookie, err := r.Cookie(ssoStateCookie)
+	if err != nil || cookie.Value == "" || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(state)) != 1 {
+		httpx.WriteError(w, apperr.Unauthorized("state 校验失败"))
+		return
+	}
+	// 校验通过后立即清除该一次性 Cookie。
+	http.SetCookie(w, &http.Cookie{
+		Name:     ssoStateCookie,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	})
 
 	if code == "" {
 		httpx.WriteError(w, apperr.InvalidArgument("code parameter is required"))

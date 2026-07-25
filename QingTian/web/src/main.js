@@ -1,6 +1,7 @@
 // 前端入口：创建 Vue 应用，挂载 Arco Design、路由、状态管理与国际化。
 import { createApp } from 'vue'
 import ArcoVue from '@arco-design/web-vue'
+import ArcoVueIcon from '@arco-design/web-vue/es/icon'
 import '@arco-design/web-vue/dist/arco.css'
 import { createPinia } from 'pinia'
 import App from './App.vue'
@@ -10,6 +11,7 @@ import { useUiStore } from './store/ui'
 
 const app = createApp(App)
 app.use(ArcoVue)   // 注册 Arco Design 组件库
+app.use(ArcoVueIcon) // 注册 Arco 图标库（icon-dashboard 等全局图标组件）
 app.use(createPinia())
 app.use(router)
 app.use(i18n)      // 注册 vue-i18n

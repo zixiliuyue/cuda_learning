@@ -301,6 +301,10 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
+	// 保证无数据时返回空数组而非 null，稳定前端契约。
+	if projects == nil {
+		projects = []*domain.Project{}
+	}
 	httpx.WriteJSON(w, http.StatusOK, projects)
 }
 
@@ -328,6 +332,60 @@ func (s *Server) handleAddProjectMember(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	p, err := s.projects.AddMember(r.Context(), id, claims.UserID, req.UserID)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, p)
+}
+
+// handleDeleteProject 删除项目（仅所有者可操作）。
+func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, PermTaskCreate); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if err := s.requireFeature(domain.FeatureMultiTenancy); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if s.projects == nil {
+		httpx.WriteError(w, apperr.Internal("项目服务未启用"))
+		return
+	}
+	claims, _ := claimsFromContext(r.Context())
+	id := r.PathValue("id")
+	if err := s.projects.Delete(r.Context(), id, claims.UserID); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"deleted": id})
+}
+
+// handleRenameProject 修改项目名称（仅所有者可操作）。
+func (s *Server) handleRenameProject(w http.ResponseWriter, r *http.Request) {
+	if err := requirePermission(r, PermTaskCreate); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if err := s.requireFeature(domain.FeatureMultiTenancy); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if s.projects == nil {
+		httpx.WriteError(w, apperr.Internal("项目服务未启用"))
+		return
+	}
+	claims, _ := claimsFromContext(r.Context())
+	id := r.PathValue("id")
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	p, err := s.projects.Rename(r.Context(), id, claims.UserID, req.Name)
 	if err != nil {
 		httpx.WriteError(w, err)
 		return

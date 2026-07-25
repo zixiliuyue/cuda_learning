@@ -12,6 +12,7 @@ import (
 	"qingtian/internal/domain"
 	"qingtian/internal/repository"
 	"qingtian/pkg/apperr"
+	"qingtian/pkg/idgen"
 )
 
 // ScheduleService 定时调度服务
@@ -57,8 +58,8 @@ func (s *ScheduleService) Create(ctx context.Context, sch *domain.Schedule) erro
 	if sch.CronExpr == "" {
 		return apperr.InvalidArgument("cron expression is required")
 	}
-	// 校验 Cron 表达式语法
-	parser := cron.NewParser(cron.Second)
+	// 校验 Cron 表达式语法（6 字段：秒 分 时 日 月 周）
+	parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	_, err := parser.Parse(sch.CronExpr)
 	if err != nil {
 		return apperr.Wrap("InvalidArgument", "invalid cron expression", err)
@@ -66,6 +67,9 @@ func (s *ScheduleService) Create(ctx context.Context, sch *domain.Schedule) erro
 
 	// 计算下次执行时间
 	now := time.Now()
+	if sch.ID == "" {
+		sch.ID = idgen.New("sch")
+	}
 	sch.CreatedAt = now
 	sch.UpdatedAt = now
 	sch.Status = domain.ScheduleStatusActive
@@ -84,7 +88,7 @@ func (s *ScheduleService) Create(ctx context.Context, sch *domain.Schedule) erro
 // Update 更新定时计划
 func (s *ScheduleService) Update(ctx context.Context, sch *domain.Schedule) error {
 	if sch.CronExpr != "" {
-		parser := cron.NewParser(cron.Second)
+		parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 		_, err := parser.Parse(sch.CronExpr)
 		if err != nil {
 			return apperr.Wrap("InvalidArgument", "invalid cron expression", err)
@@ -108,8 +112,8 @@ func (s *ScheduleService) Delete(ctx context.Context, id string) error {
 
 // addToCron 将计划添加到 cron 调度器
 func (s *ScheduleService) addToCron(ctx context.Context, sch *domain.Schedule) {
-	// 解析表达式
-	parser := cron.NewParser(cron.Second)
+	// 解析表达式（6 字段：秒 分 时 日 月 周）
+	parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	spec, _ := parser.Parse(sch.CronExpr)
 
 	// 根据时区计算下次执行时间

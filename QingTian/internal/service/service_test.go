@@ -34,11 +34,11 @@ func TestUserRegisterLogin(t *testing.T) {
 	svc := NewUserService(repo, tm)
 	ctx := context.Background()
 
-	u, err := svc.Register(ctx, "alice", "pass123", domain.RoleDeveloper)
+	u, err := svc.Register(ctx, "alice", "pass1234", domain.RoleDeveloper)
 	if err != nil {
 		t.Fatalf("注册应成功: %v", err)
 	}
-	if u.PasswordHash == "pass123" {
+	if u.PasswordHash == "pass1234" {
 		t.Error("不应存储明文密码")
 	}
 	// 重复用户名应冲突。
@@ -46,13 +46,40 @@ func TestUserRegisterLogin(t *testing.T) {
 		t.Error("重复用户名应报错")
 	}
 	// 登录成功。
-	token, _, err := svc.Login(ctx, "alice", "pass123")
+	token, _, err := svc.Login(ctx, "alice", "pass1234")
 	if err != nil || token == "" {
 		t.Fatalf("登录应成功并返回令牌: %v", err)
 	}
 	// 错误密码。
 	if _, _, err := svc.Login(ctx, "alice", "wrong"); err == nil {
 		t.Error("错误密码应登录失败")
+	}
+}
+
+// TestRegisterPasswordStrength 验证密码强度校验：少于 8 位或超过 72 字节应拒绝。
+func TestRegisterPasswordStrength(t *testing.T) {
+	repo := repository.NewMemoryUserRepo()
+	tm := auth.NewTokenManager("secret", time.Hour, 7*24*time.Hour)
+	svc := NewUserService(repo, tm)
+	ctx := context.Background()
+
+	cases := []struct {
+		name     string
+		password string
+		wantErr  bool
+	}{
+		{"空密码", "", true},
+		{"7位过短", "pass123", true},
+		{"8位合规", "pass1234", false},
+		{"超72字节", string(make([]byte, 73)), true},
+	}
+	for i, c := range cases {
+		// 每个用例用不同用户名，避免用户名冲突干扰密码校验断言。
+		username := "user" + string(rune('a'+i))
+		_, err := svc.Register(ctx, username, c.password, domain.RoleViewer)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: Register 错误状态=%v, 期望 wantErr=%v", c.name, err, c.wantErr)
+		}
 	}
 }
 
@@ -120,7 +147,7 @@ func TestRegisterRejectsDuplicateWithoutRepoDedup(t *testing.T) {
 	svc := NewUserService(repo, tm)
 	ctx := context.Background()
 
-	if _, err := svc.Register(ctx, "admin", "pass123", domain.RoleAdmin); err != nil {
+	if _, err := svc.Register(ctx, "admin", "pass1234", domain.RoleAdmin); err != nil {
 		t.Fatalf("首次注册应成功: %v", err)
 	}
 	// 第二次注册同名用户，服务层应返回冲突，而非再次成功。

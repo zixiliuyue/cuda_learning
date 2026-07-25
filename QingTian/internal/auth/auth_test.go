@@ -26,7 +26,7 @@ func TestHashAndCheckPassword(t *testing.T) {
 
 // TestTokenGenerateAndParse 验证 JWT 签发与解析。
 func TestTokenGenerateAndParse(t *testing.T) {
-	tm := NewTokenManager("test-secret", time.Hour)
+	tm := NewTokenManager("test-secret", time.Hour, 24*time.Hour)
 	u := &domain.User{ID: "u1", Username: "alice", Role: domain.RoleAdmin}
 	token, err := tm.Generate(u)
 	if err != nil {
@@ -43,7 +43,7 @@ func TestTokenGenerateAndParse(t *testing.T) {
 
 // TestTokenExpired 验证过期令牌被拒绝。
 func TestTokenExpired(t *testing.T) {
-	tm := NewTokenManager("test-secret", -time.Hour) // 立即过期
+	tm := NewTokenManager("test-secret", -time.Hour, 24*time.Hour) // 立即过期
 	u := &domain.User{ID: "u1", Username: "bob", Role: domain.RoleViewer}
 	token, _ := tm.Generate(u)
 	if _, err := tm.Parse(token); err == nil {
@@ -53,8 +53,8 @@ func TestTokenExpired(t *testing.T) {
 
 // TestTokenWrongSecret 验证密钥不匹配时校验失败。
 func TestTokenWrongSecret(t *testing.T) {
-	tm1 := NewTokenManager("secret-a", time.Hour)
-	tm2 := NewTokenManager("secret-b", time.Hour)
+	tm1 := NewTokenManager("secret-a", time.Hour, 24*time.Hour)
+	tm2 := NewTokenManager("secret-b", time.Hour, 24*time.Hour)
 	token, _ := tm1.Generate(&domain.User{ID: "u1", Role: domain.RoleViewer})
 	if _, err := tm2.Parse(token); err == nil {
 		t.Fatal("不同密钥应校验失败")
@@ -70,10 +70,13 @@ func TestRBACPermissions(t *testing.T) {
 	}{
 		{domain.RoleAdmin, PermUserManage, true},
 		{domain.RoleAdmin, PermNodeManage, true},
+		{domain.RoleAdmin, PermNodeInstall, true},
 		{domain.RoleDeveloper, PermTaskCreate, true},
 		{domain.RoleDeveloper, PermUserManage, false},
+		{domain.RoleDeveloper, PermNodeInstall, false},
 		{domain.RoleViewer, PermTaskView, true},
 		{domain.RoleViewer, PermTaskCreate, false},
+		{domain.RoleViewer, PermNodeInstall, false},
 	}
 	for _, c := range cases {
 		if got := HasPermission(c.role, c.perm); got != c.want {
