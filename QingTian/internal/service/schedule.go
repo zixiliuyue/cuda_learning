@@ -86,7 +86,19 @@ func (s *ScheduleService) Create(ctx context.Context, sch *domain.Schedule) erro
 }
 
 // Update 更新定时计划
-func (s *ScheduleService) Update(ctx context.Context, sch *domain.Schedule) error {
+//
+// 归属校验：非管理员仅能更新自己创建的计划，防止越权（IDOR）。
+func (s *ScheduleService) Update(ctx context.Context, sch *domain.Schedule, requesterID string, isAdmin bool) error {
+	// 先加载已存在的计划校验归属，避免越权覆盖他人资源。
+	existing, err := s.repo.GetByID(ctx, sch.ID)
+	if err != nil {
+		return err
+	}
+	if !isAdmin && existing.CreatedBy != requesterID {
+		return apperr.Forbidden("无权访问该定时计划")
+	}
+	// 保留原始创建者，防止请求体篡改归属。
+	sch.CreatedBy = existing.CreatedBy
 	if sch.CronExpr != "" {
 		parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 		_, err := parser.Parse(sch.CronExpr)
@@ -106,7 +118,16 @@ func (s *ScheduleService) Update(ctx context.Context, sch *domain.Schedule) erro
 }
 
 // Delete 删除定时计划
-func (s *ScheduleService) Delete(ctx context.Context, id string) error {
+//
+// 归属校验：非管理员仅能删除自己创建的计划，防止越权（IDOR）。
+func (s *ScheduleService) Delete(ctx context.Context, id, requesterID string, isAdmin bool) error {
+	existing, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !isAdmin && existing.CreatedBy != requesterID {
+		return apperr.Forbidden("无权访问该定时计划")
+	}
 	return s.repo.Delete(ctx, id)
 }
 
@@ -180,10 +201,15 @@ func (s *ScheduleService) start(ctx context.Context) {
 }
 
 // TriggerRun 手动触发一次执行
-func (s *ScheduleService) TriggerRun(ctx context.Context, id string, params map[string]interface{}) error {
+//
+// 归属校验：非管理员仅能触发自己创建的计划，防止越权（IDOR）。
+func (s *ScheduleService) TriggerRun(ctx context.Context, id string, params map[string]interface{}, requesterID string, isAdmin bool) error {
 	sch, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return err
+	}
+	if !isAdmin && sch.CreatedBy != requesterID {
+		return apperr.Forbidden("无权访问该定时计划")
 	}
 
 	trigger := domain.TriggerInfo{

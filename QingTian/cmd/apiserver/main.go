@@ -157,6 +157,7 @@ func main() {
 		WithProjects(projectSvc).
 		WithEdition(domain.Edition(cfg.Edition)).
 		WithWorkflow(workflowSvc, wfEngine, workflowRunSvc, scheduleSvc).
+		WithAgentToken(cfg.Auth.AgentToken, log).
 		WithMetricsExporter(metricsExporter)
 	mux := server.Routes(api.AuthMiddleware(tokens))
 	httpServer := &http.Server{Addr: cfg.Server.Addr, Handler: mux}

@@ -56,7 +56,19 @@ func (s *WorkflowService) Create(ctx context.Context, wf *domain.Workflow) error
 }
 
 // Update 更新工作流定义
-func (s *WorkflowService) Update(ctx context.Context, wf *domain.Workflow) error {
+//
+// 归属校验：非管理员仅能更新自己创建的工作流，防止越权（IDOR）。
+func (s *WorkflowService) Update(ctx context.Context, wf *domain.Workflow, requesterID string, isAdmin bool) error {
+	// 先加载已存在的工作流校验归属，避免越权覆盖他人资源。
+	existing, err := s.repo.GetByID(ctx, wf.ID)
+	if err != nil {
+		return err
+	}
+	if !isAdmin && existing.CreatedBy != requesterID {
+		return apperr.Forbidden("无权访问该工作流")
+	}
+	// 保留原始创建者，防止请求体篡改归属。
+	wf.CreatedBy = existing.CreatedBy
 	if err := s.ValidateDAG(wf); err != nil {
 		return err
 	}
@@ -65,7 +77,16 @@ func (s *WorkflowService) Update(ctx context.Context, wf *domain.Workflow) error
 }
 
 // Delete 删除工作流定义（软删除，改为 archived 状态）
-func (s *WorkflowService) Delete(ctx context.Context, id string) error {
+//
+// 归属校验：非管理员仅能删除自己创建的工作流，防止越权（IDOR）。
+func (s *WorkflowService) Delete(ctx context.Context, id, requesterID string, isAdmin bool) error {
+	existing, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !isAdmin && existing.CreatedBy != requesterID {
+		return apperr.Forbidden("无权访问该工作流")
+	}
 	return s.repo.Delete(ctx, id)
 }
 

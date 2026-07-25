@@ -148,8 +148,22 @@ func TestIdleNodesRequiresNodeManage(t *testing.T) {
 // TestTaskLogsHistory 验证任务历史日志查询。
 func TestTaskLogsHistory(t *testing.T) {
 	h, tm := setupFullServer(domain.EditionEnterprise)
-	rec := doJSON(h, http.MethodGet, "/api/v1/tasks/whatever/logs", devToken(tm), nil)
+	token := devToken(tm)
+	// 先提交一个归属当前用户的任务，日志查询需通过归属校验（IDOR 防护）。
+	rec := doJSON(h, http.MethodPost, "/api/v1/tasks", token, map[string]interface{}{
+		"name": "logjob", "image": "img", "gpu_count": 1, "memory_mb": 1024,
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("提交任务应返回 201，实际 %d，body=%s", rec.Code, rec.Body.String())
+	}
+	var submitResp struct {
+		Data struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &submitResp)
 	// 无日志时也应正常返回 200（空数组）。
+	rec = doJSON(h, http.MethodGet, "/api/v1/tasks/"+submitResp.Data.ID+"/logs", token, nil)
 	if rec.Code != http.StatusOK {
 		t.Errorf("查询任务日志应返回 200，实际 %d", rec.Code)
 	}

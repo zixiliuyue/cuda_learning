@@ -768,15 +768,21 @@ func (s *TaskService) List(ctx context.Context, status domain.TaskStatus) ([]*do
 // Cancel 取消一个任务。
 //
 // 参数：
-//   - ctx: 上下文。
-//   - id:  任务 ID。
+//   - ctx:         上下文。
+//   - id:          任务 ID。
+//   - requesterID: 发起者用户 ID，用于归属校验。
+//   - isAdmin:     是否管理员，管理员豁免归属校验。
 //
 // 返回值：
-//   - error: 任务不存在或当前状态不可取消时返回。
-func (s *TaskService) Cancel(ctx context.Context, id string) error {
+//   - error: 任务不存在、无权操作或当前状态不可取消时返回。
+func (s *TaskService) Cancel(ctx context.Context, id, requesterID string, isAdmin bool) error {
 	task, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return err
+	}
+	// 归属校验：非管理员仅能取消自己的任务，防止越权（IDOR）。
+	if !isAdmin && task.Owner != requesterID {
+		return apperr.Forbidden("无权访问该任务")
 	}
 	if err := task.Transition(domain.TaskCanceled, s.now()); err != nil {
 		return err
@@ -790,15 +796,21 @@ func (s *TaskService) Cancel(ctx context.Context, id string) error {
 // 重新调度下发后，Agent 会从该存档恢复进度，避免从头重跑。
 //
 // 参数：
-//   - ctx: 上下文。
-//   - id:  任务 ID。
+//   - ctx:         上下文。
+//   - id:          任务 ID。
+//   - requesterID: 发起者用户 ID，用于归属校验。
+//   - isAdmin:     是否管理员，管理员豁免归属校验。
 //
 // 返回值：
-//   - error: 任务不存在、无存档、或当前状态不允许恢复时返回。
-func (s *TaskService) Resume(ctx context.Context, id string) error {
+//   - error: 任务不存在、无权操作、无存档、或当前状态不允许恢复时返回。
+func (s *TaskService) Resume(ctx context.Context, id, requesterID string, isAdmin bool) error {
 	task, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return err
+	}
+	// 归属校验：非管理员仅能恢复自己的任务，防止越权（IDOR）。
+	if !isAdmin && task.Owner != requesterID {
+		return apperr.Forbidden("无权访问该任务")
 	}
 	if task.Status != domain.TaskFailed {
 		return apperr.Conflict("仅失败任务可断点续跑，当前状态: " + string(task.Status))

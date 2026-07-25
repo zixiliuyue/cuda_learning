@@ -3,6 +3,13 @@
 *.exe
 agent-work/
 
+# 编译产物（无扩展名的服务二进制）与临时目录
+/apiserver
+/scheduler
+/agent
+/operator
+/tmp/
+
 # 前端
 web/node_modules/
 web/dist/

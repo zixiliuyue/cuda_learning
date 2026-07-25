@@ -91,3 +91,33 @@ NSQ 下发到目标节点 → Agent 执行（注入 CUDA_VISIBLE_DEVICES）→ �
 控制面更新任务状态 → 前端展示。
 
 该闭环在 `internal/service/service_test.go` 的 `TestClosedLoop` 中以内存实现完整验证。
+
+## 安全说明
+
+生产部署前请务必：
+
+- **JWT 密钥**：通过环境变量 `QT_JWT_SECRET` 注入强随机密钥（`openssl rand -hex 32`）。
+  服务检测到默认占位密钥时将**拒绝启动**；本地开发可临时设 `QT_ALLOW_INSECURE_DEFAULTS=1` 放行。
+- **对象存储凭证**：通过 `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` 覆盖默认值，勿沿用 `minioadmin`。
+- **Agent 认证**：设置 `QT_AGENT_TOKEN`，Agent 注册/心跳需携带 `Authorization: Bearer <token>`。
+- **任务执行隔离**：任务命令在 Agent 节点执行，生产环境应通过容器（nvidia-container-runtime）隔离，避免宿主机被任意命令影响。
+
+提交前建议启用敏感信息预扫描钩子，防止密钥/内网地址误入仓库：
+
+```bash
+ln -sf ../../scripts/check-secrets.sh .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
+## 贡献指南
+
+欢迎提交 Issue 与 Pull Request：
+
+1. Fork 本仓库并基于 `main` 创建特性分支。
+2. 提交前运行 `go build ./...`、`go test ./...` 与 `bash scripts/check-secrets.sh --all`。
+3. 遵循现有代码风格，提交信息使用约定式格式（`feat:`/`fix:`/`docs:` 等）。
+4. 确保不引入任何真实凭证、内网地址或个人身份信息。
+
+## 许可
+
+本项目基于 [MIT License](./LICENSE) 开源。

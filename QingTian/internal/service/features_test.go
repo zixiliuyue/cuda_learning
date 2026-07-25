@@ -192,7 +192,7 @@ func TestResumeFromCheckpoint(t *testing.T) {
 	}
 	_ = taskRepo.Create(ctx, task)
 
-	if err := svc.Resume(ctx, "t1"); err != nil {
+	if err := svc.Resume(ctx, "t1", "u1", false); err != nil {
 		t.Fatalf("断点续跑应成功: %v", err)
 	}
 	got, _ := svc.Get(ctx, "t1")
@@ -206,7 +206,7 @@ func TestResumeFromCheckpoint(t *testing.T) {
 	// 无 Checkpoint 的失败任务不可恢复。
 	task2 := &domain.Task{ID: "t2", Name: "j2", Owner: "u1", Status: domain.TaskFailed}
 	_ = taskRepo.Create(ctx, task2)
-	if err := svc.Resume(ctx, "t2"); err == nil {
+	if err := svc.Resume(ctx, "t2", "u1", false); err == nil {
 		t.Error("无 Checkpoint 应无法断点续跑")
 	}
 }

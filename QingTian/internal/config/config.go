@@ -5,11 +5,16 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// defaultInsecureJWTSecret 是仅供本地开发的占位 JWT 密钥。
+// 生产环境必须通过 QT_JWT_SECRET 覆盖，否则拒绝启动（见 validateSecurity）。
+const defaultInsecureJWTSecret = "change-me-in-production"
 
 // MongoConfig 描述 MongoDB 连接配置。
 type MongoConfig struct {
@@ -45,6 +50,7 @@ type AuthConfig struct {
 	JWTSecret         string        `yaml:"jwt_secret"`         // JWT 签名密钥，生产环境务必使用强随机值
 	AccessTokenTTL  time.Duration `yaml:"access_token_ttl"`  // 访问令牌有效期
 	RefreshTokenTTL time.Duration `yaml:"refresh_token_ttl"` // 刷新令牌有效期
+	AgentToken      string        `yaml:"agent_token"`       // Agent 接入令牌，用于节点注册/心跳鉴权；为空则放行（仅兼容旧部署）
 }
 
 // ServerConfig 描述 HTTP 服务监听配置。
@@ -139,7 +145,25 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	applyEnvOverrides(cfg)
+	if err := validateSecurity(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// validateSecurity 在启动时校验安全关键配置。
+//
+// 若 JWT 密钥仍为内置默认值，默认拒绝启动，防止生产环境使用可预测密钥
+// 导致 token 被伪造。本地开发可显式设置环境变量 QT_ALLOW_INSECURE_DEFAULTS=1 放行。
+func validateSecurity(cfg *Config) error {
+	if cfg.Auth.JWTSecret == "" || cfg.Auth.JWTSecret == defaultInsecureJWTSecret {
+		if os.Getenv("QT_ALLOW_INSECURE_DEFAULTS") == "1" {
+			return nil
+		}
+		return fmt.Errorf("不安全的 JWT 密钥：请通过环境变量 QT_JWT_SECRET 设置强随机密钥；" +
+			"本地开发如需临时放行，可设置 QT_ALLOW_INSECURE_DEFAULTS=1")
+	}
+	return nil
 }
 
 // Default 返回带合理默认值的配置，供未提供配置文件时使用。
@@ -152,7 +176,7 @@ func Default() *Config {
 		Redis:    RedisConfig{Addr: "localhost:6379", Password: "", DB: 0},
 		NSQ:      NSQConfig{NSQDAddr: "localhost:4150", LookupdAddr: "localhost:4161", MaxInFlight: 16},
 		MinIO:     MinIOConfig{Endpoint: "localhost:9000", AccessKey: "minioadmin", SecretKey: "minioadmin", Bucket: "qingtian", UseSSL: false},
-		Auth:     AuthConfig{JWTSecret: "change-me-in-production", AccessTokenTTL: 24 * time.Hour, RefreshTokenTTL: 7 * 24 * time.Hour},
+		Auth:     AuthConfig{JWTSecret: defaultInsecureJWTSecret, AccessTokenTTL: 24 * time.Hour, RefreshTokenTTL: 7 * 24 * time.Hour},
 		OIDC: OIDCConfig{
 			Enabled:       false,
 			Scopes:        "openid email profile",
@@ -205,6 +229,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("QT_JWT_SECRET"); v != "" {
 		cfg.Auth.JWTSecret = v
+	}
+	if v := os.Getenv("QT_AGENT_TOKEN"); v != "" {
+		cfg.Auth.AgentToken = v
 	}
 	if v := os.Getenv("QT_ACCESS_TOKEN_TTL"); v != "" {
 		d, err := time.ParseDuration(v)

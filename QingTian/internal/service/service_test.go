@@ -280,7 +280,7 @@ func TestCancelTask(t *testing.T) {
 	task, _ := taskSvc.Submit(ctx, "u1", SubmitRequest{
 		Name: "job", Image: "img", GPUCount: 1, MemoryMB: 1024,
 	})
-	if err := taskSvc.Cancel(ctx, task.ID); err != nil {
+	if err := taskSvc.Cancel(ctx, task.ID, "u1", false); err != nil {
 		t.Fatalf("取消应成功: %v", err)
 	}
 	got, _ := taskSvc.Get(ctx, task.ID)

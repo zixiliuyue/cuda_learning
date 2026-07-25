@@ -37,7 +37,8 @@ func (s *Server) handleResumeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := s.tasks.Resume(r.Context(), id); err != nil {
+	requesterID, isAdmin := requesterIdentity(r)
+	if err := s.tasks.Resume(r.Context(), id, requesterID, isAdmin); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
@@ -55,6 +56,11 @@ func (s *Server) handleTaskLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	// 归属校验：非管理员仅能查看自己任务的日志，防止越权（IDOR）。
+	if _, err := s.authorizeTaskAccess(r, id); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
 	var after int64
 	_, _ = fmt.Sscanf(r.URL.Query().Get("after"), "%d", &after)
 	lines, err := s.logs.History(r.Context(), id, after)
@@ -84,6 +90,12 @@ func (s *Server) handleTaskLogStream(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	ctx := r.Context()
+
+	// 归属校验：非管理员仅能订阅自己任务的日志流，防止越权（IDOR）。
+	if _, err := s.authorizeTaskAccess(r, id); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -128,7 +140,8 @@ func (s *Server) handleTaskResultURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	task, err := s.tasks.Get(r.Context(), id)
+	// 归属校验：非管理员仅能下载自己任务的结果，防止越权（IDOR）。
+	task, err := s.authorizeTaskAccess(r, id)
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
@@ -420,7 +433,8 @@ func (s *Server) handleTaskLogDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 
-	task, err := s.tasks.Get(r.Context(), id)
+	// 归属校验：非管理员仅能下载自己任务的日志，防止越权（IDOR）。
+	task, err := s.authorizeTaskAccess(r, id)
 	if err != nil {
 		httpx.WriteError(w, err)
 		return

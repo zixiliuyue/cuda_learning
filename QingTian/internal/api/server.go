@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -73,6 +74,9 @@ type Server struct {
 	workflowRunService  *service.WorkflowRunService
 	scheduleService     *service.ScheduleService
 	edition             domain.Edition
+	// Agent 接入令牌与日志器，用于保护节点注册/心跳等无用户 JWT 的接口
+	agentToken          string
+	logger              *slog.Logger
 }
 
 // NewServer 创建 HTTP 服务实例（仅核心依赖）。
@@ -114,6 +118,13 @@ func (s *Server) WithSSO(sso *service.SSOService) *Server { s.sso = sso; return 
 
 // WithEdition 设置平台功能版本，用于企业版能力门控。
 func (s *Server) WithEdition(e domain.Edition) *Server { s.edition = e; return s }
+
+// WithAgentToken 注入 Agent 接入令牌与日志器，用于保护节点注册/心跳接口。
+func (s *Server) WithAgentToken(token string, log *slog.Logger) *Server {
+	s.agentToken = token
+	s.logger = log
+	return s
+}
 
 // WithMetricsExporter 注入 Prometheus 指标导出器。
 func (s *Server) WithMetricsExporter(e *metrics.Exporter) *Server { s.exporter = e; return s }
@@ -163,9 +174,10 @@ func (s *Server) Routes(authMW Middleware) http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 
-	// 节点注册与心跳（Agent 调用，这里不强制用户 JWT，生产应改为 mTLS/Agent 令牌）
-	mux.HandleFunc("POST /api/v1/nodes/register", s.handleNodeRegister)
-	mux.HandleFunc("POST /api/v1/nodes/{id}/heartbeat", s.handleNodeHeartbeat)
+	// 节点注册与心跳（Agent 调用）：用 Agent 接入令牌保护，未配置令牌时向后兼容放行
+	agentMW := AgentTokenMiddleware(s.agentToken, s.logger)
+	mux.Handle("POST /api/v1/nodes/register", agentMW(http.HandlerFunc(s.handleNodeRegister)))
+	mux.Handle("POST /api/v1/nodes/{id}/heartbeat", agentMW(http.HandlerFunc(s.handleNodeHeartbeat)))
 
 	// 需要认证的路由
 	authed := func(h http.HandlerFunc) http.Handler {
@@ -355,6 +367,29 @@ func requirePermission(r *http.Request, perm auth.Permission) error {
 	return nil
 }
 
+// requesterIdentity 从请求 context 取出当前用户 ID 与是否为管理员，
+// 供资源归属（IDOR）校验使用；admin 豁免归属校验可管理全部资源。
+func requesterIdentity(r *http.Request) (requesterID string, isAdmin bool) {
+	claims, ok := claimsFromContext(r.Context())
+	if !ok {
+		return "", false
+	}
+	return claims.UserID, claims.Role == domain.RoleAdmin
+}
+
+// authorizeTaskAccess 按任务 ID 加载任务并校验归属，返回任务供后续使用。
+// 非管理员访问非本人任务时返回 Forbidden，防止越权（IDOR）。
+func (s *Server) authorizeTaskAccess(r *http.Request, id string) (*domain.Task, error) {
+	task, err := s.tasks.Get(r.Context(), id)
+	if err != nil {
+		return nil, err
+	}
+	if requesterID, isAdmin := requesterIdentity(r); !isAdmin && task.Owner != requesterID {
+		return nil, apperr.Forbidden("无权访问该任务")
+	}
+	return task, nil
+}
+
 // handleRegister 处理用户注册。
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -514,6 +549,11 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
+	// 归属校验：非管理员仅能查看自己的任务，防止越权（IDOR）。
+	if requesterID, isAdmin := requesterIdentity(r); !isAdmin && task.Owner != requesterID {
+		httpx.WriteError(w, apperr.Forbidden("无权访问该任务"))
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, task)
 }
 
@@ -524,7 +564,8 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := s.tasks.Cancel(r.Context(), id); err != nil {
+	requesterID, isAdmin := requesterIdentity(r)
+	if err := s.tasks.Cancel(r.Context(), id, requesterID, isAdmin); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
@@ -852,7 +893,8 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wf.ID = id
-	if err := s.workflowService.Update(r.Context(), &wf); err != nil {
+	requesterID, isAdmin := requesterIdentity(r)
+	if err := s.workflowService.Update(r.Context(), &wf, requesterID, isAdmin); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
@@ -866,7 +908,8 @@ func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := s.workflowService.Delete(r.Context(), id); err != nil {
+	requesterID, isAdmin := requesterIdentity(r)
+	if err := s.workflowService.Delete(r.Context(), id, requesterID, isAdmin); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
@@ -886,6 +929,16 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		httpx.WriteError(w, err)
+		return
+	}
+	// 归属校验：非管理员仅能运行自己创建的工作流，防止越权（IDOR）。
+	wf, err := s.workflowService.Get(r.Context(), id)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if _, isAdmin := requesterIdentity(r); !isAdmin && wf.CreatedBy != claims.UserID {
+		httpx.WriteError(w, apperr.Forbidden("无权访问该工作流"))
 		return
 	}
 	trigger := domain.TriggerInfo{
@@ -972,6 +1025,7 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 20
 	}
+	// TODO(security): 当前列出全部计划，应按 requester 过滤（admin 除外），需扩展 repo 支持按 CreatedBy 查询。
 	schedules, total, err := s.scheduleService.List(r.Context(), skip, limit)
 	if err != nil {
 		httpx.WriteError(w, err)
@@ -1011,7 +1065,8 @@ func (s *Server) handleUpdateSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sch.ID = id
-	if err := s.scheduleService.Update(r.Context(), &sch); err != nil {
+	requesterID, isAdmin := requesterIdentity(r)
+	if err := s.scheduleService.Update(r.Context(), &sch, requesterID, isAdmin); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
@@ -1025,7 +1080,8 @@ func (s *Server) handleDeleteSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := s.scheduleService.Delete(r.Context(), id); err != nil {
+	requesterID, isAdmin := requesterIdentity(r)
+	if err := s.scheduleService.Delete(r.Context(), id, requesterID, isAdmin); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
@@ -1046,7 +1102,8 @@ func (s *Server) handleTriggerSchedule(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
-	if err := s.scheduleService.TriggerRun(r.Context(), id, req.Parameters); err != nil {
+	requesterID, isAdmin := requesterIdentity(r)
+	if err := s.scheduleService.TriggerRun(r.Context(), id, req.Parameters, requesterID, isAdmin); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}

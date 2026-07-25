@@ -42,8 +42,10 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      # 安全提示：生产部署请在 .env 或环境变量中设置 MINIO_ROOT_USER/MINIO_ROOT_PASSWORD，
+      # 切勿沿用下方开发默认值。
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     volumes:
       - minio_data:/data
     networks:
@@ -62,7 +64,9 @@ services:
       QT_NSQD_ADDR: nsqd:4150
       QT_NSQ_LOOKUPD_ADDR: nsqlookupd:4161
       QT_MINIO_ENDPOINT: minio:9000
-      QT_JWT_SECRET: qingtian-secret-key
+      # 安全提示：必须通过环境变量注入强随机密钥，否则 apiserver 将拒绝启动。
+      # 生成方式：openssl rand -hex 32
+      QT_JWT_SECRET: ${QT_JWT_SECRET:?请设置 QT_JWT_SECRET 环境变量}
     depends_on:
       - mongodb
       - redis
