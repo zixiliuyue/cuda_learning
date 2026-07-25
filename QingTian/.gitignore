@@ -16,3 +16,11 @@ web/dist/
 .deploy_logs/
 docker-compose.override.yml
 .deploy_run.log
+
+# CDP 浏览器调试脚本（一次性验证工具，含明文凭证，不入库）
+cdp_*.py
+
+# 测试覆盖率产物
+coverage
+coverage/
+*.out
