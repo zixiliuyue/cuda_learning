@@ -83,18 +83,34 @@ func TraceMiddleware(tracer *tracing.Tracer) Middleware {
 	}
 }
 
-// CORSMiddleware 处理跨域，允许前端（Vue 开发服务器）访问 API。
-func CORSMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
+// CORSMiddleware 处理跨域，仅放行可信来源白名单中的 Origin。
+//
+// 安全说明：不使用通配符 "*"，避免任意站点的脚本读取带 Bearer 令牌的
+// 跨域响应。allowedOrigins 为空时不输出任何 CORS 头（默认同源，最安全）。
+//
+// 参数：
+//   - allowedOrigins: 可信前端来源列表，如 https://console.example.com。
+func CORSMiddleware(allowedOrigins []string) Middleware {
+	allowed := make(map[string]struct{}, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		allowed[o] = struct{}{}
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			if _, ok := allowed[origin]; ok && origin != "" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			}
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // AuthMiddleware 校验请求头中的 JWT 令牌，并将解析出的声明放入 context。

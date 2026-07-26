@@ -153,15 +153,23 @@ func Load(path string) (*Config, error) {
 
 // validateSecurity 在启动时校验安全关键配置。
 //
-// 若 JWT 密钥仍为内置默认值，默认拒绝启动，防止生产环境使用可预测密钥
-// 导致 token 被伪造。本地开发可显式设置环境变量 QT_ALLOW_INSECURE_DEFAULTS=1 放行。
+// 若 JWT 密钥或对象存储凭证仍为内置默认值，默认拒绝启动，防止生产环境
+// 使用可预测密钥/公知凭证导致 token 被伪造或对象存储被任意读写。
+// 本地开发可显式设置环境变量 QT_ALLOW_INSECURE_DEFAULTS=1 放行。
 func validateSecurity(cfg *Config) error {
+	allowInsecure := os.Getenv("QT_ALLOW_INSECURE_DEFAULTS") == "1"
 	if cfg.Auth.JWTSecret == "" || cfg.Auth.JWTSecret == defaultInsecureJWTSecret {
-		if os.Getenv("QT_ALLOW_INSECURE_DEFAULTS") == "1" {
-			return nil
+		if !allowInsecure {
+			return fmt.Errorf("不安全的 JWT 密钥：请通过环境变量 QT_JWT_SECRET 设置强随机密钥；" +
+				"本地开发如需临时放行，可设置 QT_ALLOW_INSECURE_DEFAULTS=1")
 		}
-		return fmt.Errorf("不安全的 JWT 密钥：请通过环境变量 QT_JWT_SECRET 设置强随机密钥；" +
-			"本地开发如需临时放行，可设置 QT_ALLOW_INSECURE_DEFAULTS=1")
+	}
+	// 对象存储默认凭证校验：minioadmin/minioadmin 为公知默认值，生产必须覆盖。
+	if cfg.MinIO.AccessKey == "minioadmin" || cfg.MinIO.SecretKey == "minioadmin" {
+		if !allowInsecure {
+			return fmt.Errorf("不安全的 MinIO 凭证：请通过 MINIO_ROOT_USER / MINIO_ROOT_PASSWORD " +
+				"（或配置文件）设置非默认凭证；本地开发如需临时放行，可设置 QT_ALLOW_INSECURE_DEFAULTS=1")
+		}
 	}
 	return nil
 }

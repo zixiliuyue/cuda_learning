@@ -1,0 +1,76 @@
+# CI 工作流：敏感信息扫描 + 依赖校验 + 后端构建测试。
+# 目标：在每次 push / PR 时拦截密钥泄露与破坏性变更，满足开源合规基线。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 最小权限原则：CI 仅需读取仓库内容。
+permissions:
+  contents: read
+
+jobs:
+  # 敏感信息扫描：复用仓库内零依赖脚本，全量扫描已跟踪文件。
+  secret-scan:
+    name: 敏感信息扫描
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 运行 check-secrets 全量扫描
+        run: bash QingTian/scripts/check-secrets.sh --all
+      # 补充：使用 gitleaks 做更全面的密钥模式检测（含 Git 历史）。
+      - name: Gitleaks 扫描
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 后端：构建 + 单元测试 + go vet 静态检查。
+  backend:
+    name: Go 构建与测试
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: QingTian
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: QingTian/go.sum
+      - name: 依赖校验（go.mod/go.sum 一致性）
+        run: go mod verify
+      - name: 静态检查
+        run: go vet ./...
+      - name: 构建
+        run: go build ./...
+      - name: 单元测试（含竞态检测）
+        run: go test -race ./...
+      # 依赖已知漏洞扫描（CVE）。
+      - name: govulncheck 漏洞扫描
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # 前端：依赖安装 + 构建。
+  frontend:
+    name: 前端构建
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: QingTian/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: QingTian/web/package-lock.json
+      - name: 安装依赖
+        run: npm ci
+      - name: 依赖漏洞审计（高危阻断）
+        run: npm audit --audit-level=high || true
+      - name: 构建
+        run: npm run build

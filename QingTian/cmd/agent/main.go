@@ -61,6 +61,10 @@ func main() {
 		_ = producer.Publish(ctx, mq.TopicTaskLog, body)
 	}
 	executor := agent.NewStreamingExecutor(cfg.Agent.WorkDir, logSink)
+	// 安全警示：本地执行器直接在宿主机 shell 中运行任务命令，未做容器隔离。
+	// 一旦被授权用户提交恶意命令，将影响宿主机。生产环境必须通过容器
+	// （nvidia-container-runtime）隔离执行，详见 README「安全说明」。
+	log.Warn("任务执行采用本地 shell（无容器隔离），生产环境请改用容器执行器以隔离宿主机")
 	// 控制面客户端：HTTP。
 	cp := agent.NewHTTPControlPlane(cfg.Agent.ControlPlaneURL)
 

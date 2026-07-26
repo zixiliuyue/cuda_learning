@@ -65,8 +65,9 @@ type ScheduleRepository interface {
 	// GetByID 获取定时计划
 	GetByID(ctx context.Context, id string) (*domain.Schedule, error)
 
-	// List 列出所有定时计划
-	List(ctx context.Context, skip, limit int) ([]*domain.Schedule, int64, error)
+	// List 列出定时计划。ownerID 非空时仅返回该创建者的计划（用于按用户隔离），
+	// 为空时返回全部（供管理员使用）。
+	List(ctx context.Context, ownerID string, skip, limit int) ([]*domain.Schedule, int64, error)
 
 	// Create 创建定时计划
 	Create(ctx context.Context, s *domain.Schedule) error
@@ -270,12 +271,17 @@ func (r *mongoScheduleRepo) GetByID(ctx context.Context, id string) (*domain.Sch
 }
 
 // List implements ScheduleRepository
-func (r *mongoScheduleRepo) List(ctx context.Context, skip, limit int) ([]*domain.Schedule, int64, error) {
+func (r *mongoScheduleRepo) List(ctx context.Context, ownerID string, skip, limit int) ([]*domain.Schedule, int64, error) {
 	var schedules []*domain.Schedule
 	findOpts := options.Find().SetSkip(int64(skip)).SetLimit(int64(limit))
-	// 注意：Find 的第二个参数是查询过滤器，必须显式传入 bson.D{}（匹配全部），
+	// 按创建者过滤：ownerID 为空表示不限制（管理员查看全部）。
+	filter := bson.D{}
+	if ownerID != "" {
+		filter = bson.D{{Key: "createdBy", Value: ownerID}}
+	}
+	// 注意：Find 的第二个参数是查询过滤器，必须显式传入 filter（匹配全部时为 bson.D{}），
 	// 否则会把 FindOptions 误当作过滤器，导致查不到任何文档。
-	cursor, err := r.coll.Find(ctx, bson.D{}, findOpts)
+	cursor, err := r.coll.Find(ctx, filter, findOpts)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -283,7 +289,7 @@ func (r *mongoScheduleRepo) List(ctx context.Context, skip, limit int) ([]*domai
 	if err != nil {
 		return nil, 0, err
 	}
-	total, err := r.coll.CountDocuments(ctx, bson.D{})
+	total, err := r.coll.CountDocuments(ctx, filter)
 	if err != nil {
 		return nil, 0, err
 	}

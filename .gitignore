@@ -44,3 +44,26 @@ _tmp/
 *.tmp
 *.log
 .gstack/
+
+# === 敏感信息过滤（防止密钥/凭证误入仓库）===
+# 环境变量与本地配置（保留 *.example 供参考）
+.env
+.env.*
+!.env.example
+*.local
+# 凭证与密钥文件
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+*_credentials.json
+.deploy_credentials.json
+credentials.json
+secrets.yaml
+secrets.yml
+# SSH / 部署一次性产物（历史上曾误提交明文凭证）
+*.ppk
+plink.exe
+deploy_package/

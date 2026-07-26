@@ -812,13 +812,16 @@ func (r *MemoryScheduleRepo) GetByID(_ context.Context, id string) (*domain.Sche
 	return &cp, nil
 }
 
-// List 实现 ScheduleRepository.List。
-func (r *MemoryScheduleRepo) List(_ context.Context, skip, limit int) ([]*domain.Schedule, int64, error) {
+// List 实现 ScheduleRepository.List。ownerID 非空时仅返回该创建者的计划。
+func (r *MemoryScheduleRepo) List(_ context.Context, ownerID string, skip, limit int) ([]*domain.Schedule, int64, error) {
 	r.mu.RLock()
 	defer r.mu.Unlock()
 	out := make([]*domain.Schedule, 0)
 	var count int64
 	for _, sch := range r.byID {
+		if ownerID != "" && sch.CreatedBy != ownerID {
+			continue
+		}
 		out = append(out, sch)
 		count++
 	}

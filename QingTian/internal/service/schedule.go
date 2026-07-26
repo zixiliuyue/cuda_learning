@@ -48,9 +48,9 @@ func (s *ScheduleService) GetByID(ctx context.Context, id string) (*domain.Sched
 	return s.repo.GetByID(ctx, id)
 }
 
-// List 列出所有定时计划
-func (s *ScheduleService) List(ctx context.Context, skip, limit int) ([]*domain.Schedule, int64, error) {
-	return s.repo.List(ctx, skip, limit)
+// List 列出定时计划。ownerID 非空时仅返回该创建者的计划（管理员可传空查看全部）。
+func (s *ScheduleService) List(ctx context.Context, ownerID string, skip, limit int) ([]*domain.Schedule, int64, error) {
+	return s.repo.List(ctx, ownerID, skip, limit)
 }
 
 // Create 创建定时计划

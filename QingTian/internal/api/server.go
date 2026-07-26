@@ -391,20 +391,27 @@ func (s *Server) authorizeTaskAccess(r *http.Request, id string) (*domain.Task, 
 }
 
 // handleRegister 处理用户注册。
+//
+// 安全说明：公开注册接口不信任客户端传入的 role 字段，防止匿名用户
+// 通过 body 携带 role=admin 实现垂直越权。角色由服务端决定：
+//   - 系统首个用户（bootstrap 初始化）自动成为 admin；
+//   - 其后所有公开注册一律为最低权限 developer；
+//   - 管理员角色只能由具备 user:manage 权限的现有管理员另行分配。
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Username string      `json:"username"`
-		Password string      `json:"password"`
-		Role     domain.Role `json:"role"`
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
-	if req.Role == "" {
-		req.Role = domain.RoleDeveloper // 默认注册为开发者
+	// 服务端裁决角色：仅当系统尚无任何用户时，首个注册者作为初始管理员。
+	role := domain.RoleDeveloper
+	if existing, err := s.users.List(r.Context()); err == nil && len(existing) == 0 {
+		role = domain.RoleAdmin
 	}
-	u, err := s.users.Register(r.Context(), req.Username, req.Password, req.Role)
+	u, err := s.users.Register(r.Context(), req.Username, req.Password, role)
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
@@ -635,6 +642,11 @@ func (s *Server) handleGetTemplate(w http.ResponseWriter, r *http.Request) {
 	template, err := s.templates.Get(r.Context(), id)
 	if err != nil {
 		httpx.WriteError(w, err)
+		return
+	}
+	// 归属校验：非管理员仅能查看本人模板，防止越权读取他人命令/环境变量（IDOR）。
+	if requesterID, isAdmin := requesterIdentity(r); !isAdmin && template.OwnerID != requesterID {
+		httpx.WriteError(w, apperr.Forbidden("无权访问该模板"))
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, template)
@@ -877,6 +889,11 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
+	// 归属校验：非管理员仅能查看本人工作流（IDOR）。
+	if requesterID, isAdmin := requesterIdentity(r); !isAdmin && wf.CreatedBy != requesterID {
+		httpx.WriteError(w, apperr.Forbidden("无权访问该工作流"))
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, wf)
 }
 
@@ -966,6 +983,16 @@ func (s *Server) handleListWorkflowRuns(w http.ResponseWriter, r *http.Request) 
 	if limit <= 0 {
 		limit = 20
 	}
+	// 归属校验：非管理员仅能查看本人工作流的执行历史（IDOR）。
+	wf, err := s.workflowService.Get(r.Context(), id)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	if requesterID, isAdmin := requesterIdentity(r); !isAdmin && wf.CreatedBy != requesterID {
+		httpx.WriteError(w, apperr.Forbidden("无权访问该工作流"))
+		return
+	}
 	runs, total, err := s.workflowRunService.List(r.Context(), id, skip, limit)
 	if err != nil {
 		httpx.WriteError(w, err)
@@ -987,6 +1014,11 @@ func (s *Server) handleGetWorkflowRun(w http.ResponseWriter, r *http.Request) {
 	run, err := s.workflowRunService.Get(r.Context(), id)
 	if err != nil {
 		httpx.WriteError(w, err)
+		return
+	}
+	// 归属校验：非管理员仅能查看本人触发的执行实例（IDOR）。
+	if requesterID, isAdmin := requesterIdentity(r); !isAdmin && run.CreatedBy != requesterID {
+		httpx.WriteError(w, apperr.Forbidden("无权访问该执行实例"))
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, run)
@@ -1025,8 +1057,13 @@ func (s *Server) handleListSchedules(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 {
 		limit = 20
 	}
-	// TODO(security): 当前列出全部计划，应按 requester 过滤（admin 除外），需扩展 repo 支持按 CreatedBy 查询。
-	schedules, total, err := s.scheduleService.List(r.Context(), skip, limit)
+	// 按创建者隔离：非管理员只能列出本人计划，管理员传空查看全部（IDOR）。
+	requesterID, isAdmin := requesterIdentity(r)
+	ownerFilter := requesterID
+	if isAdmin {
+		ownerFilter = ""
+	}
+	schedules, total, err := s.scheduleService.List(r.Context(), ownerFilter, skip, limit)
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
@@ -1047,6 +1084,11 @@ func (s *Server) handleGetSchedule(w http.ResponseWriter, r *http.Request) {
 	sch, err := s.scheduleService.GetByID(r.Context(), id)
 	if err != nil {
 		httpx.WriteError(w, err)
+		return
+	}
+	// 归属校验：非管理员仅能查看本人定时计划（IDOR）。
+	if requesterID, isAdmin := requesterIdentity(r); !isAdmin && sch.CreatedBy != requesterID {
+		httpx.WriteError(w, apperr.Forbidden("无权访问该定时计划"))
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, sch)
